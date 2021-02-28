@@ -57,13 +57,14 @@ def get_datadir() -> str:
     Returns absolute path to data store dir
     TODO: Add config for colab
     '''
+    experiment_dirname = 'train_v1'
     env = get_exec_env()
     if env in ['kaggle-Interactive', 'kaggle-Batch']:
-        return '/kaggle/working/data'
+        return '/kaggle/working/data/' + experiment_dirname
     elif env == 'colab':
         return ''
     elif env == 'local':
-        return get_original_cwd() + '/data'
+        return get_original_cwd() + '/data/' + experiment_dirname
     else:
         raise ValueError
 

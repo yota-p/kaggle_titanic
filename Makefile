@@ -44,7 +44,7 @@ test:
 
 ## Create base64 encoded script from src/
 encode: clean
-	python encode.py
+	python script/encode.py
 
 ## Test python environment is setup correctly
 test_environment:

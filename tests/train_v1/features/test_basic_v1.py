@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 from pathlib import Path
-from src.features import basic_v1
+from src.train_v1.features import basic_v1
 
 
 class TestBasicV1:
@@ -31,7 +31,7 @@ class TestBasicV1:
             data.to_csv(f'{IN_DIR}/{file}.csv')
 
         # call target
-        mocker.patch('src.features.basic_v1.get_datadir', return_value=DATA_DIR)
+        mocker.patch('src.train_v1.features.basic_v1.get_datadir', return_value=DATA_DIR)
         basic_v1.main()
 
         # assert memory size
@@ -61,7 +61,7 @@ class TestBasicV1:
             data.to_csv(f'{IN_DIR}/{file}.csv', index=False)
 
         # call target
-        mocker.patch('src.features.basic_v1.get_datadir', return_value=DATA_DIR)
+        mocker.patch('src.train_v1.features.basic_v1.get_datadir', return_value=DATA_DIR)
         basic_v1.main()
 
         # assert csv-> pickled files

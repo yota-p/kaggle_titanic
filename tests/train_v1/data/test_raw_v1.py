@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 import hashlib
-from src.data import raw_v1
+from src.train_v1.data import raw_v1
 
 
 class TestRawV1:
@@ -29,8 +29,8 @@ class TestRawV1:
             f = open(f'{IN_DIR}/{file}', 'w')
             f.write(f'This is {file}')
 
-        mocker.patch('src.data.raw_v1.get_datadir', return_value=DATA_DIR)
-        mocker.patch('src.data.raw_v1.get_exec_env', return_value=ENV)
+        mocker.patch('src.train_v1.data.raw_v1.get_datadir', return_value=DATA_DIR)
+        mocker.patch('src.train_v1.data.raw_v1.get_exec_env', return_value=ENV)
         raw_v1.main()
 
         # assert copied files
@@ -52,8 +52,8 @@ class TestRawV1:
 
         ENV = 'fizz'
 
-        mocker.patch('src.data.raw_v1.get_datadir', return_value=DATA_DIR)
-        mocker.patch('src.data.raw_v1.get_exec_env', return_value=ENV)
+        mocker.patch('src.train_v1.data.raw_v1.get_datadir', return_value=DATA_DIR)
+        mocker.patch('src.train_v1.data.raw_v1.get_exec_env', return_value=ENV)
 
         with pytest.raises(ValueError):
             raw_v1.main()

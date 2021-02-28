@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from src.util.reduce_mem_usage import reduce_mem_usage
+from src.train_v1.util.reduce_mem_usage import reduce_mem_usage
 
 '''
 Ref:

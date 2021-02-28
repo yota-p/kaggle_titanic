@@ -12,8 +12,8 @@ import warnings
 from typing import List, Any  # Tuple
 from omegaconf.dictconfig import DictConfig
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import KFold
 from src.train_v1.util.get_environment import get_datadir, is_gpu, is_ipykernel
-from src.train_v1.models.PurgedGroupTimeSeriesSplit import PurgedGroupTimeSeriesSplit
 warnings.filterwarnings("ignore")
 
 
@@ -55,7 +55,7 @@ def train_full(
     return None
 
 
-def train_cv(
+def train_KFold(
         train: pd.DataFrame,
         features: List[str],
         target: str,
@@ -66,9 +66,9 @@ def train_cv(
         OUT_DIR: str
         ) -> None:
 
-    kf = PurgedGroupTimeSeriesSplit(**cv_param)
+    kf = KFold(**cv_param)
     scores = []
-    for fold, (tr, te) in enumerate(kf.split(train[target].values, train[target].values, train['date'].values)):
+    for fold, (tr, te) in enumerate(kf.split(train[target].values, train[target].values)):
         print(f'Starting fold: {fold}, train size: {len(tr)}, validation size: {len(te)}')
         X_tr, X_val = train.loc[tr, features].values, train.loc[te, features].values
         y_tr, y_val = train.loc[tr, target].values, train.loc[te, target].values
@@ -91,6 +91,13 @@ def train_cv(
         pickle.dump(model, open(file, 'wb'))
         mlflow.log_artifact(file)
         del model, X_tr, X_val, y_tr, y_val
+
+    ave_tr_auc, ave_val_auc = 0.0, 0.0
+    for score in scores:
+        ave_tr_auc += score['tr_auc'] / len(scores)
+        ave_val_auc += score['val_auc'] / len(scores)
+
+    print(f'ave_tr_auc: {ave_tr_auc}, ave_val_auc: {ave_val_auc}')
 
     return None
 
@@ -132,7 +139,6 @@ def main(cfg: DictConfig) -> None:
     mlflow.log_params(cfg.model.model_param)
     mlflow.log_params(cfg.model.train_param)
     mlflow.log_param('cv.name', cfg.cv.name)
-    mlflow.log_params(cfg.cv.param)
     mlflow.log_param('feature', cfg.features)
 
     # FE
@@ -172,8 +178,9 @@ def main(cfg: DictConfig) -> None:
     if cfg.option.train:
         if cfg.cv.name == 'nocv':
             train_full(train, features, cfg.target.col, cfg.model.name, cfg.model.model_param, cfg.model.train_param, OUT_DIR)
-        elif cfg.cv.name == 'PurgedGroupTimeSeriesSplit':
-            train_cv(train, features, cfg.target.col, cfg.model.name, cfg.model.model_param, cfg.model.train_param, cfg.cv.param, OUT_DIR)
+        elif cfg.cv.name == 'KFold':
+            train_KFold(train, features, cfg.target.col, cfg.model.name, cfg.model.model_param, \
+                        cfg.model.train_param, cfg.cv.param, OUT_DIR)
         else:
             raise ValueError(f'Invalid cv: {cfg.cv.name}')
 

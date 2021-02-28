@@ -1,7 +1,7 @@
 # [Titanic - Machine Learning from Disaster](https://www.kaggle.com/c/titanic/overview)
 
-[![pytest](https://github.com/yota-p/kaggle_titanic/workflows/pytest/badge.svg)](https://github.com/yota-p/kaggle_titanic/actions?query=workflow%3Apytest)
-[![lint](https://github.com/yota-p/kaggle_titanic/workflows/lint/badge.svg)](https://github.com/yota-p/kaggle_titanic/actions?query=workflow%3Alint)
+[![lint](https://github.com/yota-p/kaggle_titanic/actions/workflows/lint.yml/badge.svg)](https://github.com/yota-p/kaggle_titanic/actions/workflows/lint.yml)
+[![pytest](https://github.com/yota-p/kaggle_titanic/actions/workflows/pytest.yml/badge.svg)](https://github.com/yota-p/kaggle_titanic/actions/workflows/pytest.yml)
 
 Best score: Public LB XXXXXX (TODO: Coming soon...)
 ------------

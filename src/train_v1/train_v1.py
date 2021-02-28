@@ -78,9 +78,10 @@ def train_cv(
                   **train_param)
 
         pred_tr, pred_val = model.predict(X_tr), model.predict(X_val)
+        tr_auc = roc_auc_score(y_tr, pred_tr)
         val_auc = roc_auc_score(y_val, pred_val)
 
-        score = {'fold': fold, 'val_auc': val_auc}
+        score = {'fold': fold, 'tr_auc': tr_auc, 'val_auc': val_auc}
 
         mlflow.log_metrics(score)
         scores.append(score)

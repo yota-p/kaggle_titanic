@@ -2,9 +2,9 @@ mlflow:
   experiment:
     name: train_v1
     tags: 
-      exec: dev  # dev, test, prd
+      exec: prd  # dev, test, prd
 
-out_dir: run/dev001
+out_dir: train_v1/prd001
 
 option:
   train: true
@@ -21,14 +21,14 @@ cv:
 model:
   name: XGBClassifier
   model_param:
-    n_estimators: 2
-    max_depth: 2
+    n_estimators: 500
+    max_depth: 11
     learning_rate: 0.05
     subsample: 0.9
     colsample_bytree: 0.7
     missing: -999
     random_state: 2020
-    # tree_method: gpu_hist
+    tree_method: gpu_hist
   train_param:
     eval_metric: null
     early_stopping_rounds: null

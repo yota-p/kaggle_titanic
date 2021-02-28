@@ -1,5 +1,5 @@
 import pandas as pd
-from src.util.calc_utility_score import utility_score_numba
+from src.train_v1.util.calc_utility_score import utility_score_numba
 
 
 class TestUtilityScoreNumba:

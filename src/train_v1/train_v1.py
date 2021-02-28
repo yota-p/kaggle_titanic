@@ -11,7 +11,7 @@ import pprint
 import warnings
 from typing import List, Any  # Tuple
 from omegaconf.dictconfig import DictConfig
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import accuracy_score
 from sklearn.model_selection import KFold
 from src.train_v1.util.get_environment import get_datadir, is_gpu, is_ipykernel
 warnings.filterwarnings("ignore")
@@ -78,10 +78,10 @@ def train_KFold(
                   **train_param)
 
         pred_tr, pred_val = model.predict(X_tr), model.predict(X_val)
-        tr_auc = roc_auc_score(y_tr, pred_tr)
-        val_auc = roc_auc_score(y_val, pred_val)
+        tr_acc = accuracy_score(y_tr, pred_tr)
+        val_acc = accuracy_score(y_val, pred_val)
 
-        score = {'fold': fold, 'tr_auc': tr_auc, 'val_auc': val_auc}
+        score = {'fold': fold, 'tr_acc': tr_acc, 'val_acc': val_acc}
 
         mlflow.log_metrics(score)
         scores.append(score)
@@ -92,12 +92,12 @@ def train_KFold(
         mlflow.log_artifact(file)
         del model, X_tr, X_val, y_tr, y_val
 
-    ave_tr_auc, ave_val_auc = 0.0, 0.0
+    ave_tr_acc, ave_val_acc = 0.0, 0.0
     for score in scores:
-        ave_tr_auc += score['tr_auc'] / len(scores)
-        ave_val_auc += score['val_auc'] / len(scores)
+        ave_tr_acc += score['tr_acc'] / len(scores)
+        ave_val_acc += score['val_acc'] / len(scores)
 
-    print(f'ave_tr_auc: {ave_tr_auc}, ave_val_auc: {ave_val_auc}')
+    print(f'ave_tr_acc: {ave_tr_acc}, ave_val_acc: {ave_val_acc}')
 
     return None
 
@@ -122,15 +122,15 @@ def predict(
 def main(cfg: DictConfig) -> None:
     pprint.pprint(dict(cfg))
     DATA_DIR = get_datadir()
-    OUT_DIR = f'{DATA_DIR}/{cfg.out_dir}'
+    OUT_DIR = f'{DATA_DIR}/{cfg.experiment.name}/{cfg.experiment.tags.exec}{cfg.runno}'
     Path(OUT_DIR).mkdir(exist_ok=True, parents=True)
 
     # follow these sequences: uri > experiment > run > others
     tracking_uri = f'{DATA_DIR}/mlruns'
     mlflow.set_tracking_uri(tracking_uri)  # uri must be set before set_experiment
-    mlflow.set_experiment(cfg.mlflow.experiment.name)
+    mlflow.set_experiment(cfg.experiment.name)
     mlflow.start_run()
-    mlflow.set_tags(cfg.mlflow.experiment.tags)
+    mlflow.set_tags(cfg.experiment.tags)
     if not is_ipykernel():
         mlflow.log_artifacts('.hydra/')
 
@@ -179,7 +179,7 @@ def main(cfg: DictConfig) -> None:
         if cfg.cv.name == 'nocv':
             train_full(train, features, cfg.target.col, cfg.model.name, cfg.model.model_param, cfg.model.train_param, OUT_DIR)
         elif cfg.cv.name == 'KFold':
-            train_KFold(train, features, cfg.target.col, cfg.model.name, cfg.model.model_param, \
+            train_KFold(train, features, cfg.target.col, cfg.model.name, cfg.model.model_param,
                         cfg.model.train_param, cfg.cv.param, OUT_DIR)
         else:
             raise ValueError(f'Invalid cv: {cfg.cv.name}')

@@ -1,2 +1,11 @@
+experiment:
+  name: train_v1
+  tags:
+    exec: prd
+
+option:
+  train: true
+  predict: true
+      
 defaults:
-  - run: dev001
+  - run: run001

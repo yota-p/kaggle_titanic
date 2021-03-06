@@ -13,7 +13,7 @@ from typing import List, Any  # Tuple
 from omegaconf.dictconfig import DictConfig
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import KFold
-from src.train_v1.util.get_environment import get_datadir, is_gpu, is_ipykernel
+from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env
 warnings.filterwarnings("ignore")
 
 
@@ -81,11 +81,11 @@ def train_KFold(
         tr_acc = accuracy_score(y_tr, pred_tr)
         val_acc = accuracy_score(y_val, pred_val)
 
-        score = {'fold': fold, 'tr_acc': tr_acc, 'val_acc': val_acc}
+        score = {'tr_acc': tr_acc, 'val_acc': val_acc}
 
-        mlflow.log_metrics(score)
+        mlflow.log_metrics(score, step=fold)
         scores.append(score)
-        pprint.pprint(score)
+        pprint.pprint({'fold': fold}.update(score))
 
         file = f'{OUT_DIR}/model_{fold}.pkl'
         pickle.dump(model, open(file, 'wb'))
@@ -126,20 +126,24 @@ def main(cfg: DictConfig) -> None:
     Path(OUT_DIR).mkdir(exist_ok=True, parents=True)
 
     # follow these sequences: uri > experiment > run > others
-    tracking_uri = f'{DATA_DIR}/mlruns'
-    mlflow.set_tracking_uri(tracking_uri)  # uri must be set before set_experiment
+    tracking_uri = 'http://mlflow-tracking-server:5000'
+    mlflow.set_tracking_uri(tracking_uri)  # uri must be set before set_experiment. artifact_uri is defined at tracking server
     mlflow.set_experiment(cfg.experiment.name)
     mlflow.start_run()
     mlflow.set_tags(cfg.experiment.tags)
-    if not is_ipykernel():
+    if get_exec_env() == 'local':
         mlflow.log_artifacts('.hydra/')
+    else:
+        print('Note: configuration yaml is not logged in ipykernel environment')
+
+    mlflow.set_tag('cv', cfg.cv.name)
+    mlflow.set_tag('model', cfg.model.name)
 
     mlflow.log_param('feature_engineering', cfg.feature_engineering)
-    mlflow.log_param('model.name', cfg.model.name)
+    mlflow.log_param('feature.name', [f.name for f in cfg.features])
+    mlflow.log_params(cfg.cv.param)
     mlflow.log_params(cfg.model.model_param)
     mlflow.log_params(cfg.model.train_param)
-    mlflow.log_param('cv.name', cfg.cv.name)
-    mlflow.log_param('feature', cfg.features)
 
     # FE
     train = pd.DataFrame()

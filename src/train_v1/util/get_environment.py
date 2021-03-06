@@ -24,6 +24,7 @@ def get_device() -> torch.device:
     return torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 
+# This doesn't work correct with hydra
 def is_ipykernel() -> bool:
     if 'ipykernel' in sys.modules:
         # Kaggle Notebook interactive, Kaggle Notebook Batch, Kaggle script Interactive, Jupyter notebook

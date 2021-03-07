@@ -9,3 +9,4 @@ option:
       
 defaults:
   - run: run001
+  - model: XGBClassifier_1

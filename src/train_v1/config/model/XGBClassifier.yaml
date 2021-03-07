@@ -1,0 +1,14 @@
+model:
+  name: XGBClassifier
+  model_param:
+    n_estimators: 100
+    max_depth: 11
+    learning_rate: 0.05
+    subsample: 0.9
+    colsample_bytree: 0.7
+    missing: -999
+    random_state: 42
+    tree_method: gpu_hist
+  train_param:
+    eval_metric: logloss
+    early_stopping_rounds: 5

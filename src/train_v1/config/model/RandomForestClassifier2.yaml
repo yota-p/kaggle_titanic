@@ -1,0 +1,25 @@
+model:
+  name: RandomForestClassifier2
+  model_param:
+    n_estimators: 30
+    criterion: 'gini'
+    max_depth: null
+    min_samples_split: 8
+    min_samples_leaf: 8
+    min_weight_fraction_leaf: 0.0
+    max_features: 'auto'
+    max_leaf_nodes: null
+    min_impurity_decrease: 0.0
+    min_impurity_split: null
+    bootstrap: true
+    oob_score: false
+    n_jobs: null
+    random_state: null
+    verbose: 0
+    warm_start: false
+    class_weight: null
+    ccp_alpha: 0.0
+    max_samples: null
+  train_param:
+    sample_weight: null
+    eval_metrics: logloss

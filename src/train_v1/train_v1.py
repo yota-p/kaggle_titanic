@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 import pandas as pd
 import numpy as np
 import xgboost as xgb
@@ -11,7 +12,7 @@ import pprint
 import warnings
 from typing import List, Any  # Tuple
 from omegaconf.dictconfig import DictConfig
-from sklearn.metrics import accuracy_score, log_loss
+from sklearn.metrics import log_loss, accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold
 from sklearn.ensemble import RandomForestClassifier
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env
@@ -165,8 +166,13 @@ def train_KFold(
     4. Calculate validation metrics
     5. Calculate average validation metrics
     '''
+    # store step-wise scores in schema: {'tr_acc': [...], 'val_acc': [...]}
+    metrics = ['tr_acc', 'val_acc', 'tr_auc', 'val_auc']
+    scores: dict = {}
+    for metric in metrics:
+        scores[metric] = []
+
     kf = KFold(**cv_param)
-    scores = []
     for fold, (tr, te) in enumerate(kf.split(train[target].values, train[target].values)):
         print(f'Starting fold: {fold}, train size: {len(tr)}, validation size: {len(te)}')
         X_tr, X_val = train.loc[tr, features].values, train.loc[te, features].values
@@ -177,16 +183,19 @@ def train_KFold(
                   **train_param)
 
         pred_tr, pred_val = model.predict(X_tr), model.predict(X_val)
-        tr_acc = accuracy_score(y_tr, pred_tr)
-        val_acc = accuracy_score(y_val, pred_val)
-        tr_acc = log_loss(y_tr, pred_tr)
-        val_acc = log_loss(y_val, pred_val)
 
+        # log learning curve
         log_learning_curve(model_name, model, fold)
 
-        # log metrics for this fold
-        score = {'tr_acc': tr_acc, 'val_acc': val_acc}
-        scores.append(score)
+        # log summarized metrics for this fold
+        score = {
+            metrics[0]: accuracy_score(y_tr, pred_tr),
+            metrics[1]: accuracy_score(y_val, pred_val),
+            metrics[2]: roc_auc_score(y_tr, pred_tr),
+            metrics[3]: roc_auc_score(y_val, pred_val)
+            }
+        for metric in metrics:
+            scores[metric].append(score[metric])
         mlflow.log_metrics(score, step=fold)
 
         # log model
@@ -194,12 +203,11 @@ def train_KFold(
         pickle.dump(model, open(file, 'wb'))
         mlflow.log_artifact(file)
 
-    ave_tr_acc, ave_val_acc = 0.0, 0.0
-    for score in scores:
-        ave_tr_acc += score['tr_acc'] / len(scores)
-        ave_val_acc += score['val_acc'] / len(scores)
-
-    print(f'ave_tr_acc: {ave_tr_acc}, ave_val_acc: {ave_val_acc}')
+    # calculate fold-average scores
+    avg_scores = {}
+    for metric, scorelist in scores.items():
+        avg_scores[metric] = np.array(scorelist).mean()
+    mlflow.log_metrics(avg_scores)
 
     return None
 
@@ -222,6 +230,16 @@ def predict(
 
 @hydra.main(config_path="./config", config_name="config")
 def main(cfg: DictConfig) -> None:
+    commit = None
+    if get_exec_env() == 'local':
+        # Check for changes not commited
+        command = 'git diff --exit-code'
+        proc = subprocess.Popen(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if cfg.experiment.tags.exec == 'prd' and proc.returncode != 0:  # check for changes not commited
+            raise Exception(f'Changes must be commited before running production!')
+        command = "git rev-parse HEAD"
+        commit = subprocess.check_output(command.split()).strip().decode('utf-8')
+
     pprint.pprint(dict(cfg))
     DATA_DIR = get_datadir()
     OUT_DIR = f'{DATA_DIR}/{cfg.experiment.name}/{cfg.experiment.tags.exec}{cfg.runno}'
@@ -233,6 +251,8 @@ def main(cfg: DictConfig) -> None:
     mlflow.set_experiment(cfg.experiment.name)
     mlflow.start_run()
     mlflow.set_tags(cfg.experiment.tags)
+    if commit is not None:
+        mlflow.set_tag('commit', commit)
     if get_exec_env() == 'local':
         mlflow.log_artifacts('.hydra/')
     else:

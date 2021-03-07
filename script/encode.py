@@ -2,6 +2,8 @@ import base64
 import gzip
 from pathlib import Path
 import glob
+import subprocess
+import argparse
 
 
 def encode_file(path: Path) -> str:
@@ -20,4 +22,16 @@ def build_script():
 
 
 if __name__ == '__main__':
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument('-f', '--force',
+                           action='store_true',
+                           help='Ignore changes not commited')
+    args = argparser.parse_args()
+
+    # check for changes not commited
+    command = 'git diff --exit-code'
+    proc = subprocess.Popen(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if not args.force and proc.returncode != 0:  # check for changes not commited
+        raise Exception(f'Changes must be commited before encoding!')
+
     build_script()

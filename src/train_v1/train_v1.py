@@ -204,7 +204,7 @@ def train_KFold(
     5. Calculate average validation metrics
     '''
     # store scores in schema: {'tr_acc': {'fold': [0.1, 0.8, ...], 'avg': 0.005}, ...}
-    metrics = ['tr_acc', 'val_acc', 'tr_auc', 'val_auc']
+    metrics = ['train-acc', 'valid-acc', 'train-auc', 'valid-auc']
     scores: dict = {}
     for metric in metrics:
         scores[metric] = {'fold': [], 'avg': None}
@@ -233,7 +233,7 @@ def train_KFold(
             }
         for metric in metrics:
             scores[metric]['fold'].append(score[metric])
-            mlflow.log_metric(f'fold_{metric}', score[metric], step=fold)
+            mlflow.log_metric(f'fold{fold}_{metric}', score[metric], step=fold)
 
         # log model
         file = f'{OUT_DIR}/model_{fold}.pkl'

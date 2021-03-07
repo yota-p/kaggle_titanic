@@ -8,7 +8,7 @@ model:
     colsample_bytree: 0.7
     missing: -999
     random_state: 42
-    tree_method: auto
+    tree_method: gpu_hist
   train_param:
     eval_metric: logloss
     early_stopping_rounds: 5

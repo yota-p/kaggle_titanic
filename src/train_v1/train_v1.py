@@ -46,7 +46,7 @@ class RandomForestClassifier2(RandomForestClassifier):
             self.evals_result_ = {}
             for i in range(0, len(eval_set)):
                 # Example: evals_result = {'valid_0': {'logloss': []}, 'valid-1': {'AUC': []}}
-                self.evals_result_.update({f'valid_{i}': {f'{eval_metrics}': []}})
+                self.evals_result_.update({f'valid{i}': {f'{eval_metrics}': []}})
 
             # train through different n_estimators
             for i in range(1, n_estimators+1):
@@ -59,8 +59,8 @@ class RandomForestClassifier2(RandomForestClassifier):
                         metric = log_loss(y_val, pred_val)
                     else:
                         raise ValueError(f'Invalid eval_metrics: {eval_metrics}')
-                    self.evals_result_[f'valid_{j}'][f'{eval_metrics}'].append(metric)
-                    msg = msg + f'\tvalid_{j}-{eval_metrics}: {metric}'
+                    self.evals_result_[f'valid{j}'][f'{eval_metrics}'].append(metric)
+                    msg = msg + f'\tvalid{j}-{eval_metrics}: {metric}'
                 print(msg)
         else:
             self.model.fit(X, y, sample_weight)
@@ -107,6 +107,32 @@ def train_full(
     return None
 
 
+def get_normalized_metricname(metricname: str) -> str:
+    '''
+    Function to absorve the difference in metric names
+    '''
+    metricname_aggs = {
+        'auc': ['areaundercurve'],
+        'f1': ['fmeasure', 'f1measure', 'f1value'],
+        'acc': ['accuracy'],
+        'logloss': ['binarylogloss']
+    }
+    metricname_candidates = [to_name for to_name in metricname_aggs.keys()]
+
+    # normalize
+    normalized_name = metricname.lower().replace('-', '').replace('_', '').replace(' ', '')
+
+    # aggregation
+    for to_name, from_names in metricname_aggs.items():
+        if normalized_name in from_names:
+            normalized_name = to_name
+
+    if normalized_name in metricname_candidates:
+        return normalized_name
+    else:
+        raise ValueError(f'Unexpected metricname: {metricname}')
+
+
 def log_learning_curve(model_name: str, model: Any, fold=0):
     '''
     Function to log learning curve.
@@ -115,35 +141,47 @@ def log_learning_curve(model_name: str, model: Any, fold=0):
         'validation_0': {'logloss': ['0.604835', '0.531479']},
         'validation_1': {'logloss': ['0.41965', '0.17686']}
         }
+    example key for output: fold0_valid0-logloss
     '''
     if model_name == 'XGBClassifier':
         evals_result = model.evals_result()
-        for validation_X, metricdict in evals_result.items():
+        for eval_idx in range(len(evals_result)):
+            validation_X_raw = f'validation_{eval_idx}'  # this is the raw expression from model
+            metricdict = evals_result[validation_X_raw]
             for metricname, scorelist in metricdict.items():  # this loops only once
+                metricname = get_normalized_metricname(metricname)
                 for i, score in enumerate(scorelist):
-                    # key example: fold0_validation_0-logloss
-                    mlflow.log_metric(f'fold{fold}_{validation_X}-{metricname}', score, i)
+                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}', score, i)
+
     elif model_name == 'LGBMClassifier':
         evals_result = model.evals_result_
-        for validation_X, metricdict in evals_result.items():
+        for eval_idx in range(len(evals_result)):
+            validation_X_raw = 'training' if eval_idx == 0 else f'valid_{eval_idx}'  # this is the raw expression from model
+            metricdict = evals_result[validation_X_raw]
             for metricname, scorelist in metricdict.items():  # this loops only once
+                metricname = get_normalized_metricname(metricname)
                 for i, score in enumerate(scorelist):
-                    # key example: fold0_validation_0-logloss
-                    mlflow.log_metric(f'fold{fold}_{validation_X}-{metricname}', score, i)
+                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}', score, i)
+
     elif model_name == 'CatBoostClassifier':
         evals_result = model.get_evals_result()
-        for validation_X, metricdict in evals_result.items():
+        for eval_idx in range(len(evals_result)-1):  # skip key 'learn', which contains same value as validation_0
+            validation_X_raw = f'validation_{eval_idx}'
+            metricdict = evals_result[validation_X_raw]
             for metricname, scorelist in metricdict.items():  # this loops only once
+                metricname = get_normalized_metricname(metricname)
                 for i, score in enumerate(scorelist):
-                    # key example: fold0_validation_0-logloss
-                    mlflow.log_metric(f'fold{fold}_{validation_X}-{metricname}', score, i)
+                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}', score, i)
+
     elif model_name == 'RandomForestClassifier2':
         evals_result = model.get_evals_result()
-        for validation_X, metricdict in evals_result.items():
+        for eval_idx in range(len(evals_result)):
+            validation_X_raw = f'valid{eval_idx}'
+            metricdict = evals_result[validation_X_raw]
             for metricname, scorelist in metricdict.items():  # this loops only once
+                metricname = get_normalized_metricname(metricname)
                 for i, score in enumerate(scorelist):
-                    # key example: fold0_validation_0-logloss
-                    mlflow.log_metric(f'fold{fold}_{validation_X}-{metricname}', score, i)
+                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}', score, i)
     else:
         raise ValueError(f'Invalid model_name: {model_name}')
 

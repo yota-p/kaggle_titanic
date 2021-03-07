@@ -10,7 +10,7 @@ import hydra
 import pickle
 import pprint
 import warnings
-from typing import List, Any  # Tuple
+from typing import List, Any, Dict  # Tuple
 from omegaconf.dictconfig import DictConfig
 from sklearn.metrics import log_loss, accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold
@@ -158,7 +158,7 @@ def train_KFold(
         train_param: DictConfig,
         cv_param: DictConfig,
         OUT_DIR: str
-        ) -> None:
+        ) -> Dict:
     '''
     1. Create model
     2. Split training data into folds
@@ -166,11 +166,11 @@ def train_KFold(
     4. Calculate validation metrics
     5. Calculate average validation metrics
     '''
-    # store step-wise scores in schema: {'tr_acc': [...], 'val_acc': [...]}
+    # store scores in schema: {'tr_acc': {'fold': [0.1, 0.8, ...], 'avg': 0.005}, ...}
     metrics = ['tr_acc', 'val_acc', 'tr_auc', 'val_auc']
     scores: dict = {}
     for metric in metrics:
-        scores[metric] = []
+        scores[metric] = {'fold': [], 'avg': None}
 
     kf = KFold(**cv_param)
     for fold, (tr, te) in enumerate(kf.split(train[target].values, train[target].values)):
@@ -195,8 +195,8 @@ def train_KFold(
             metrics[3]: roc_auc_score(y_val, pred_val)
             }
         for metric in metrics:
-            scores[metric].append(score[metric])
-        mlflow.log_metrics(score, step=fold)
+            scores[metric]['fold'].append(score[metric])
+            mlflow.log_metric(f'fold_{metric}', step=fold)
 
         # log model
         file = f'{OUT_DIR}/model_{fold}.pkl'
@@ -204,12 +204,11 @@ def train_KFold(
         mlflow.log_artifact(file)
 
     # calculate fold-average scores
-    avg_scores = {}
-    for metric, scorelist in scores.items():
-        avg_scores[metric] = np.array(scorelist).mean()
-    mlflow.log_metrics(avg_scores)
+    for metric in metrics:
+        scores[metric]['avg'] = np.array(scores[metric]['fold']).mean()
+        mlflow.log_metric(f'avg_{metric}', scores[metric]['avg'])
 
-    return None
+    return scores
 
 
 def predict(

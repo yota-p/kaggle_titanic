@@ -11,6 +11,15 @@ def encode_file(path: Path) -> str:
     return base64.b64encode(compressed).decode('utf-8')
 
 
+def has_changes_to_commit() -> bool:
+    command = 'git diff --exit-code'
+    proc = subprocess.Popen(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode == 0:
+        return False
+    else:
+        return True
+
+
 def build_script():
     to_encode = [Path(p) for p in glob.glob('src/**/*.py', recursive=True)] \
               + [Path(p) for p in glob.glob('config/**/*.yaml', recursive=True)]
@@ -28,10 +37,7 @@ if __name__ == '__main__':
                            help='Ignore changes not commited')
     args = argparser.parse_args()
 
-    # check for changes not commited
-    command = 'git diff --exit-code'
-    proc = subprocess.Popen(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if not args.force and proc.returncode != 0:  # check for changes not commited
+    if not args.force and has_changes_to_commit():  # check for changes not commited
         raise Exception(f'Changes must be commited before encoding!')
 
     build_script()

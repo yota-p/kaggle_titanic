@@ -228,14 +228,21 @@ def predict(
     return pred_df
 
 
+def has_changes_to_commit() -> bool:
+    command = 'git diff --exit-code'
+    proc = subprocess.Popen(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode == 0:
+        return False
+    else:
+        return True
+
+
 @hydra.main(config_path="./config", config_name="config")
 def main(cfg: DictConfig) -> None:
     commit = None
+    # Check for changes not commited
     if get_exec_env() == 'local':
-        # Check for changes not commited
-        command = 'git diff --exit-code'
-        proc = subprocess.Popen(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if cfg.experiment.tags.exec == 'prd' and proc.returncode != 0:  # check for changes not commited
+        if cfg.experiment.tags.exec == 'prd' and has_changes_to_commit():  # check for changes not commited
             raise Exception(f'Changes must be commited before running production!')
         command = "git rev-parse HEAD"
         commit = subprocess.check_output(command.split()).strip().decode('utf-8')

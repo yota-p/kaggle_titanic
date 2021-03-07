@@ -11,10 +11,60 @@ import pprint
 import warnings
 from typing import List, Any  # Tuple
 from omegaconf.dictconfig import DictConfig
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, log_loss
 from sklearn.model_selection import KFold
+from sklearn.ensemble import RandomForestClassifier
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env
 warnings.filterwarnings("ignore")
+
+
+class RandomForestClassifier2(RandomForestClassifier):
+    def __init__(self, **kwargs):
+        self.model = RandomForestClassifier(**kwargs)
+
+    def __getattr__(self, name):
+        # this returns attributes that does not exist in this class
+        return getattr(self.model, name)
+
+    def get_evals_result(self):
+        return self.evals_result_
+
+    def fit(self, X, y, eval_set=None, eval_metrics=None, sample_weight=None):
+        '''
+        Fit Random forest with learning curve.
+        eval_set = [(X_val1, y_val1), (X_val2, y_val2), ...]
+        Note: Once after fitted, add attribute ends with a underscore.
+        This is because sklearn.utils.validation.check_is_fitted()
+        checks if model is fitted by this criterion.
+        '''
+        n_estimators = self.model.get_params()['n_estimators']
+        to_validate = True if (eval_set is not None and eval_metrics is not None) else False
+
+        # Validate by calculating metrics for various n_estimators
+        if to_validate:
+            # initialize evals_result
+            self.evals_result_ = {}
+            for i in range(0, len(eval_set)):
+                # Example: evals_result = {'valid_0': {'logloss': []}, 'valid-1': {'AUC': []}}
+                self.evals_result_.update({f'valid_{i}': {f'{eval_metrics}': []}})
+
+            # train through different n_estimators
+            for i in range(1, n_estimators+1):
+                msg = f'[{i}]'
+                self.model.set_params(n_estimators=i)
+                self.model.fit(X, y, sample_weight)
+                for j, (X_val, y_val) in enumerate(eval_set):
+                    pred_val = self.model.predict(X_val)
+                    if eval_metrics == 'logloss':
+                        metric = log_loss(y_val, pred_val)
+                    else:
+                        raise ValueError(f'Invalid eval_metrics: {eval_metrics}')
+                    self.evals_result_[f'valid_{j}'][f'{eval_metrics}'].append(metric)
+                    msg = msg + f'\tvalid_{j}-{eval_metrics}: {metric}'
+                print(msg)
+        else:
+            self.model.fit(X, y, sample_weight)
+            self.evals_result_ = None
 
 
 def get_model(model_name: str, model_param: DictConfig) -> Any:
@@ -26,6 +76,8 @@ def get_model(model_name: str, model_param: DictConfig) -> Any:
         return lgb.LGBMClassifier(**model_param)
     elif model_name == 'CatBoostClassifier':
         return catboost.CatBoostClassifier(**model_param)
+    elif model_name == 'RandomForestClassifier2':
+        return RandomForestClassifier2(**model_param)
     else:
         raise ValueError(f'Invalid model_name: {model_name}')
 
@@ -85,6 +137,13 @@ def log_learning_curve(model_name: str, model: Any, fold=0):
                 for i, score in enumerate(scorelist):
                     # key example: fold0_validation_0-logloss
                     mlflow.log_metric(f'fold{fold}_{validation_X}-{metricname}', score, i)
+    elif model_name == 'RandomForestClassifier2':
+        evals_result = model.get_evals_result()
+        for validation_X, metricdict in evals_result.items():
+            for metricname, scorelist in metricdict.items():  # this loops only once
+                for i, score in enumerate(scorelist):
+                    # key example: fold0_validation_0-logloss
+                    mlflow.log_metric(f'fold{fold}_{validation_X}-{metricname}', score, i)
     else:
         raise ValueError(f'Invalid model_name: {model_name}')
 
@@ -120,6 +179,8 @@ def train_KFold(
         pred_tr, pred_val = model.predict(X_tr), model.predict(X_val)
         tr_acc = accuracy_score(y_tr, pred_tr)
         val_acc = accuracy_score(y_val, pred_val)
+        tr_acc = log_loss(y_tr, pred_tr)
+        val_acc = log_loss(y_val, pred_val)
 
         log_learning_curve(model_name, model, fold)
 
@@ -237,6 +298,16 @@ def main(cfg: DictConfig) -> None:
             models.append(model)
 
         test = pd.read_pickle(f'{DATA_DIR}/{cfg.test.path}')
+        # Fill missing values
+        if cfg.feature_engineering.method_fillna == '-999':
+            test.loc[:, features] = test.loc[:, features].fillna(-999)
+        elif cfg.feature_engineering.method_fillna == 'forward':
+            test.loc[:, features] = test.loc[:, features].fillna(method='ffill').fillna(0)
+        elif cfg.feature_engineering.method_fillna is None:
+            pass
+        else:
+            raise ValueError(f'Invalid method_fillna: {cfg.feature_engineering.method_fillna}')
+
         sample_submission = pd.read_csv(f'{DATA_DIR}/raw/gender_submission.csv')
 
         pred_df = predict(models, test, features, cfg.target.col)

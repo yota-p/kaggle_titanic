@@ -14,8 +14,7 @@ from omegaconf.dictconfig import DictConfig
 from sklearn.metrics import log_loss, accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold
 from sklearn.ensemble import RandomForestClassifier
-from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env
-from src.train_v1.util.githandler import has_changes_to_commit, get_head_commit
+from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit
 warnings.filterwarnings("ignore")
 
 

@@ -151,7 +151,7 @@ def log_learning_curve(model_name: str, model: Any, fold=0):
             for metricname, scorelist in metricdict.items():  # this loops only once
                 metricname = get_normalized_metricname(metricname)
                 for i, score in enumerate(scorelist):
-                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}', score, i)
+                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}_vsstep', score, i)
 
     elif model_name == 'LGBMClassifier':
         evals_result = model.evals_result_
@@ -161,7 +161,7 @@ def log_learning_curve(model_name: str, model: Any, fold=0):
             for metricname, scorelist in metricdict.items():  # this loops only once
                 metricname = get_normalized_metricname(metricname)
                 for i, score in enumerate(scorelist):
-                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}', score, i)
+                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}_vsstep', score, i)
 
     elif model_name == 'CatBoostClassifier':
         evals_result = model.get_evals_result()
@@ -171,7 +171,7 @@ def log_learning_curve(model_name: str, model: Any, fold=0):
             for metricname, scorelist in metricdict.items():  # this loops only once
                 metricname = get_normalized_metricname(metricname)
                 for i, score in enumerate(scorelist):
-                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}', score, i)
+                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}_vsstep', score, i)
 
     elif model_name == 'RandomForestClassifier2':
         evals_result = model.get_evals_result()
@@ -181,7 +181,7 @@ def log_learning_curve(model_name: str, model: Any, fold=0):
             for metricname, scorelist in metricdict.items():  # this loops only once
                 metricname = get_normalized_metricname(metricname)
                 for i, score in enumerate(scorelist):
-                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}', score, i)
+                    mlflow.log_metric(f'fold{fold}_valid{eval_idx}-{metricname}_vsstep', score, i)
     else:
         raise ValueError(f'Invalid model_name: {model_name}')
 
@@ -207,7 +207,7 @@ def train_KFold(
     metrics = ['train-acc', 'valid-acc', 'train-auc', 'valid-auc']
     scores: dict = {}
     for metric in metrics:
-        scores[metric] = {'fold': [], 'avg': None}
+        scores[metric] = {'vsfold': [], 'avg': None}
 
     kf = KFold(**cv_param)
     for fold, (tr, te) in enumerate(kf.split(train[target].values, train[target].values)):
@@ -221,10 +221,10 @@ def train_KFold(
 
         pred_tr, pred_val = model.predict(X_tr), model.predict(X_val)
 
-        # log learning curve
+        # log metrics per step
         log_learning_curve(model_name, model, fold)
 
-        # log summarized metrics for this fold
+        # log metrics per fold
         score = {
             metrics[0]: accuracy_score(y_tr, pred_tr),
             metrics[1]: accuracy_score(y_val, pred_val),
@@ -232,18 +232,18 @@ def train_KFold(
             metrics[3]: roc_auc_score(y_val, pred_val)
             }
         for metric in metrics:
-            scores[metric]['fold'].append(score[metric])
-            mlflow.log_metric(f'fold{fold}_{metric}', score[metric], step=fold)
+            scores[metric]['vsfold'].append(score[metric])
+            mlflow.log_metric(f'{metric}_vsfold', score[metric], step=fold)
 
         # log model
         file = f'{OUT_DIR}/model_{fold}.pkl'
         pickle.dump(model, open(file, 'wb'))
         mlflow.log_artifact(file)
 
-    # calculate fold-average scores
+    # log metrics averaged over folds
     for metric in metrics:
-        scores[metric]['avg'] = np.array(scores[metric]['fold']).mean()
-        mlflow.log_metric(f'avg_{metric}', scores[metric]['avg'])
+        scores[metric]['avg'] = np.array(scores[metric]['vsfold']).mean()
+        mlflow.log_metric(f'{metric}_foldavg', scores[metric]['avg'])
 
     return scores
 

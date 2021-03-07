@@ -230,7 +230,7 @@ def predict(
 
 def has_changes_to_commit() -> bool:
     command = 'git diff --exit-code'
-    proc = subprocess.Popen(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.run(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if proc.returncode == 0:
         return False
     else:

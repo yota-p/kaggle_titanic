@@ -55,6 +55,40 @@ def train_full(
     return None
 
 
+def log_learning_curve(model_name: str, model: Any, fold=0):
+    '''
+    Function to log learning curve.
+    For GBDT models, the schema of evals_result is uniform like below:
+    evals_result = {
+        'validation_0': {'logloss': ['0.604835', '0.531479']},
+        'validation_1': {'logloss': ['0.41965', '0.17686']}
+        }
+    '''
+    if model_name == 'XGBClassifier':
+        evals_result = model.evals_result()
+        for validation_X, metricdict in evals_result.items():
+            for metricname, scorelist in metricdict.items():  # this loops only once
+                for i, score in enumerate(scorelist):
+                    # key example: fold0_validation_0-logloss
+                    mlflow.log_metric(f'fold{fold}_{validation_X}-{metricname}', score, i)
+    elif model_name == 'LGBMClassifier':
+        evals_result = model.evals_result_
+        for validation_X, metricdict in evals_result.items():
+            for metricname, scorelist in metricdict.items():  # this loops only once
+                for i, score in enumerate(scorelist):
+                    # key example: fold0_validation_0-logloss
+                    mlflow.log_metric(f'fold{fold}_{validation_X}-{metricname}', score, i)
+    elif model_name == 'CatBoostClassifier':
+        evals_result = model.get_evals_result()
+        for validation_X, metricdict in evals_result.items():
+            for metricname, scorelist in metricdict.items():  # this loops only once
+                for i, score in enumerate(scorelist):
+                    # key example: fold0_validation_0-logloss
+                    mlflow.log_metric(f'fold{fold}_{validation_X}-{metricname}', score, i)
+    else:
+        raise ValueError(f'Invalid model_name: {model_name}')
+
+
 def train_KFold(
         train: pd.DataFrame,
         features: List[str],
@@ -65,7 +99,13 @@ def train_KFold(
         cv_param: DictConfig,
         OUT_DIR: str
         ) -> None:
-
+    '''
+    1. Create model
+    2. Split training data into folds
+    3. Train model
+    4. Calculate validation metrics
+    5. Calculate average validation metrics
+    '''
     kf = KFold(**cv_param)
     scores = []
     for fold, (tr, te) in enumerate(kf.split(train[target].values, train[target].values)):
@@ -81,16 +121,17 @@ def train_KFold(
         tr_acc = accuracy_score(y_tr, pred_tr)
         val_acc = accuracy_score(y_val, pred_val)
 
+        log_learning_curve(model_name, model, fold)
+
+        # log metrics for this fold
         score = {'tr_acc': tr_acc, 'val_acc': val_acc}
-
-        mlflow.log_metrics(score, step=fold)
         scores.append(score)
-        pprint.pprint({'fold': fold}.update(score))
+        mlflow.log_metrics(score, step=fold)
 
+        # log model
         file = f'{OUT_DIR}/model_{fold}.pkl'
         pickle.dump(model, open(file, 'wb'))
         mlflow.log_artifact(file)
-        del model, X_tr, X_val, y_tr, y_val
 
     ave_tr_acc, ave_val_acc = 0.0, 0.0
     for score in scores:

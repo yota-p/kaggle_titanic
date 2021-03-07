@@ -9,7 +9,7 @@ cv:
     n_splits: 5
     shuffle: True
 
-model:
+modelxgb:
   name: XGBClassifier
   model_param:
     n_estimators: 100
@@ -22,6 +22,41 @@ model:
     tree_method: gpu_hist
   train_param:
     eval_metric: logloss
+    early_stopping_rounds: 5
+
+modellgb:
+  name: LGBMClassifier
+  model_param:
+    boosting_type: gbdt
+    num_leaves: 31
+    max_depth: -1
+    learning_rate: 0.1
+    n_estimators: 100
+    subsample_for_bin: 200000
+    objective: null
+    class_weight: null
+    min_split_gain: 0.0
+    min_child_weight: 0.001
+    min_child_samples: 20
+    subsample: 1.0
+    subsample_freq: 0
+    colsample_bytree: 1.0
+    reg_alpha: 0.2
+    reg_lambda: 0.0
+    random_state: null
+    n_jobs: -1
+    silent: True
+    importance_type: split
+  train_param:
+    eval_metric: logloss
+    early_stopping_rounds: 5
+
+model:
+  name: CatBoostClassifier
+  model_param:
+    loss_function: Logloss
+    eval_metric: Logloss
+  train_param:
     early_stopping_rounds: 5
 
 target:

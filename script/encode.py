@@ -14,10 +14,12 @@ def encode_file(path: Path) -> str:
 def has_changes_to_commit() -> bool:
     command = 'git diff --exit-code'
     proc = subprocess.run(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if proc.returncode == 0:
+    if proc.returncode in [0, 128]:  # 0: no changes, 128: not a repository
         return False
-    else:
+    elif proc.returncode == 1:  # 1: has changes
         return True
+    else:
+        raise ValueError(f'Unexpected return code: {proc.returncode}')
 
 
 def build_script():

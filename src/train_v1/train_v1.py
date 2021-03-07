@@ -1,5 +1,4 @@
 from pathlib import Path
-import subprocess
 import pandas as pd
 import numpy as np
 import xgboost as xgb
@@ -16,6 +15,7 @@ from sklearn.metrics import log_loss, accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold
 from sklearn.ensemble import RandomForestClassifier
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env
+from src.train_v1.util.githandler import has_changes_to_commit, get_head_commit
 warnings.filterwarnings("ignore")
 
 
@@ -196,7 +196,7 @@ def train_KFold(
             }
         for metric in metrics:
             scores[metric]['fold'].append(score[metric])
-            mlflow.log_metric(f'fold_{metric}', step=fold)
+            mlflow.log_metric(f'fold_{metric}', score[metric], step=fold)
 
         # log model
         file = f'{OUT_DIR}/model_{fold}.pkl'
@@ -227,24 +227,13 @@ def predict(
     return pred_df
 
 
-def has_changes_to_commit() -> bool:
-    command = 'git diff --exit-code'
-    proc = subprocess.run(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if proc.returncode == 0:
-        return False
-    else:
-        return True
-
-
 @hydra.main(config_path="./config", config_name="config")
 def main(cfg: DictConfig) -> None:
-    commit = None
+    commit = get_head_commit()
     # Check for changes not commited
     if get_exec_env() == 'local':
         if cfg.experiment.tags.exec == 'prd' and has_changes_to_commit():  # check for changes not commited
             raise Exception(f'Changes must be commited before running production!')
-        command = "git rev-parse HEAD"
-        commit = subprocess.check_output(command.split()).strip().decode('utf-8')
 
     pprint.pprint(dict(cfg))
     DATA_DIR = get_datadir()
@@ -257,8 +246,7 @@ def main(cfg: DictConfig) -> None:
     mlflow.set_experiment(cfg.experiment.name)
     mlflow.start_run()
     mlflow.set_tags(cfg.experiment.tags)
-    if commit is not None:
-        mlflow.set_tag('commit', commit)
+    mlflow.set_tag('commit', commit) if commit is not None else print('No commit hash')
     if get_exec_env() == 'local':
         mlflow.log_artifacts('.hydra/')
     else:

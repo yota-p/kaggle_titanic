@@ -354,8 +354,7 @@ def main(cfg: DictConfig) -> None:
     nfl = NaFiller(cfg.feature_engineering.method_fillna, feat_cols)
     train = nfl.fit_transform(train)
     if nfl.mean_ is not None:
-        f_mean = nfl.mean_.values
-        np.save(f'{OUT_DIR}/nafiller_mean.npy', f_mean)
+        np.save(f'{OUT_DIR}/nafiller_mean.npy', nfl.mean_.values)
 
     # Train
     if cfg.option.train:
@@ -374,18 +373,12 @@ def main(cfg: DictConfig) -> None:
             model = pd.read_pickle(open(f'{OUT_DIR}/model_{i}.pkl', 'rb'))
             models.append(model)
 
+        # load data
         test = pd.read_pickle(f'{DATA_DIR}/{cfg.test.path}')
-        # Fill missing values
-        if cfg.feature_engineering.method_fillna == '-999':
-            test.loc[:, feat_cols] = test.loc[:, feat_cols].fillna(-999)
-        elif cfg.feature_engineering.method_fillna == 'forward':
-            test.loc[:, feat_cols] = test.loc[:, feat_cols].fillna(method='ffill').fillna(0)
-        elif cfg.feature_engineering.method_fillna is None:
-            pass
-        else:
-            raise ValueError(f'Invalid method_fillna: {cfg.feature_engineering.method_fillna}')
-
         sample_submission = pd.read_csv(f'{DATA_DIR}/raw/gender_submission.csv')
+
+        # Fill missing values
+        test = nfl.transform(test)
 
         pred_df = predict(models, test, feat_cols, cfg.target.col)
         if not pred_df.shape == sample_submission.shape:

@@ -16,7 +16,33 @@ from sklearn.model_selection import KFold
 from sklearn.ensemble import RandomForestClassifier
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit
 from src.train_v1.util.seeder import seed_everything
+from src.train_v1.features.basetransformer import BaseTransformer
 warnings.filterwarnings("ignore")
+
+
+class NaFiller(BaseTransformer):
+    def __init__(self, method: str, target_cols: List[str]) -> None:
+        self.method_ = method
+        self.target_cols = target_cols
+        self.mean_: pd.DataFrame = None
+
+    def fit(self, X):
+        if self.method_ == 'mean':
+            self.mean_ = X[self.target_cols].mean()
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        if self.method_ == '-999':
+            X.fillna(-999, inplace=True)
+        elif self.method_ == 'mean':
+            X.fillna(self.mean_, inplace=True)
+        elif self.method_ == 'forward':
+            X.fillna(method='ffill').fillna(0, inplace=True)
+        elif self.method is None:
+            pass
+        else:
+            raise ValueError(f'Invalid method: {self.method}')
+        return X
 
 
 class RandomForestClassifier2(RandomForestClassifier):
@@ -305,11 +331,11 @@ def main(cfg: DictConfig) -> None:
     train = pd.DataFrame()
 
     # load feature
-    features = []
+    feat_cols = []
     for f in cfg.features:
         df = pd.read_pickle(f'{DATA_DIR}/{f.path}').loc[:, f.cols]
         train = pd.concat([train, df], axis=1)
-        features += f.cols
+        feat_cols += f.cols
         print(f'Feature: {f.name}, shape: {df.shape}')
 
     # load info
@@ -325,21 +351,18 @@ def main(cfg: DictConfig) -> None:
 
     # Feature engineering
     # Fill missing values
-    if cfg.feature_engineering.method_fillna == '-999':
-        train.loc[:, features] = train.loc[:, features].fillna(-999)
-    elif cfg.feature_engineering.method_fillna == 'forward':
-        train.loc[:, features] = train.loc[:, features].fillna(method='ffill').fillna(0)
-    elif cfg.feature_engineering.method_fillna is None:
-        pass
-    else:
-        raise ValueError(f'Invalid method_fillna: {cfg.feature_engineering.method_fillna}')
+    nfl = NaFiller(cfg.feature_engineering.method_fillna, feat_cols)
+    train = nfl.fit_transform(train)
+    if nfl.mean_ is not None:
+        f_mean = nfl.mean_.values
+        np.save(f'{OUT_DIR}/nafiller_mean.npy', f_mean)
 
     # Train
     if cfg.option.train:
         if cfg.cv.name == 'nocv':
-            train_full(train, features, cfg.target.col, cfg.model.name, cfg.model.model_param, cfg.model.train_param, OUT_DIR)
+            train_full(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param, cfg.model.train_param, OUT_DIR)
         elif cfg.cv.name == 'KFold':
-            train_KFold(train, features, cfg.target.col, cfg.model.name, cfg.model.model_param,
+            train_KFold(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param,
                         cfg.model.train_param, cfg.cv.param, OUT_DIR)
         else:
             raise ValueError(f'Invalid cv: {cfg.cv.name}')
@@ -354,9 +377,9 @@ def main(cfg: DictConfig) -> None:
         test = pd.read_pickle(f'{DATA_DIR}/{cfg.test.path}')
         # Fill missing values
         if cfg.feature_engineering.method_fillna == '-999':
-            test.loc[:, features] = test.loc[:, features].fillna(-999)
+            test.loc[:, feat_cols] = test.loc[:, feat_cols].fillna(-999)
         elif cfg.feature_engineering.method_fillna == 'forward':
-            test.loc[:, features] = test.loc[:, features].fillna(method='ffill').fillna(0)
+            test.loc[:, feat_cols] = test.loc[:, feat_cols].fillna(method='ffill').fillna(0)
         elif cfg.feature_engineering.method_fillna is None:
             pass
         else:
@@ -364,7 +387,7 @@ def main(cfg: DictConfig) -> None:
 
         sample_submission = pd.read_csv(f'{DATA_DIR}/raw/gender_submission.csv')
 
-        pred_df = predict(models, test, features, cfg.target.col)
+        pred_df = predict(models, test, feat_cols, cfg.target.col)
         if not pred_df.shape == sample_submission.shape:
             raise Exception(f'Incorrect pred_df.shape: {pred_df.shape}')
         pred_df.to_csv(f'{OUT_DIR}/submission.csv')

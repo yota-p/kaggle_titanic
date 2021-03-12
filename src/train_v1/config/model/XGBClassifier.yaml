@@ -7,7 +7,7 @@ model:
     subsample: 0.9
     colsample_bytree: 0.7
     missing: -999
-    random_state: 42
+    random_state: null  #42
     tree_method: auto
   train_param:
     eval_metric: logloss

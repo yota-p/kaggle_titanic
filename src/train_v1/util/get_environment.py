@@ -2,6 +2,8 @@ import os
 import sys
 import torch
 import hydra
+import subprocess
+from typing import Union
 
 
 def get_exec_env() -> str:
@@ -24,6 +26,7 @@ def get_device() -> torch.device:
     return torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 
+# This doesn't work correct with hydra
 def is_ipykernel() -> bool:
     if 'ipykernel' in sys.modules:
         # Kaggle Notebook interactive, Kaggle Notebook Batch, Kaggle script Interactive, Jupyter notebook
@@ -57,20 +60,54 @@ def get_datadir() -> str:
     Returns absolute path to data store dir
     TODO: Add config for colab
     '''
+    experiment_dirname = 'train_v1'
     env = get_exec_env()
     if env in ['kaggle-Interactive', 'kaggle-Batch']:
-        return '/kaggle/working/data'
+        return '/kaggle/working/data/' + experiment_dirname
     elif env == 'colab':
         return ''
     elif env == 'local':
-        return get_original_cwd() + '/data'
+        return get_original_cwd() + '/data/' + experiment_dirname
     else:
         raise ValueError
 
 
+def has_changes_to_commit() -> bool:
+    '''
+    Function to check for changes not commited in current git repository.
+    Returns False if current repository is not a git repo.
+    '''
+    command = 'git diff --exit-code'
+    proc = subprocess.run(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode in [0, 128]:  # 0: no changes, 128: not a repository
+        return False
+    elif proc.returncode == 1:  # 1: has changes
+        return True
+    else:
+        raise ValueError(f'Unexpected return code: {proc.returncode}')
+
+
+def get_head_commit() -> Union[str, None]:
+    '''
+    Function to get head commit in current git repository.
+    Returns None if current repository is not a git repo.
+    '''
+    command = "git rev-parse HEAD"
+    proc = subprocess.run(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode == 0:
+        commit = subprocess.check_output(command.split()).strip().decode('utf-8')
+        return commit
+    elif proc.returncode == 128:  # 128: not a repository
+        return None
+    else:
+        raise ValueError(f'Unexpected return code: {proc.returncode}')
+
+
 if __name__ == '__main__':
-    print(f'Execution environment: {get_exec_env()}')
-    print(f'Is GPU: {is_gpu()}')
-    print(f'Is ipykernel: {is_ipykernel()}')
-    print(f'Original cwd: {get_original_cwd()}')
-    print(f'Datadir: {get_datadir()}')
+    print(f'get_exec_env(): {get_exec_env()}')
+    print(f'is_gpu(): {is_gpu()}')
+    print(f'is_ipykernel(): {is_ipykernel()}')
+    print(f'get_original_cwd(): {get_original_cwd()}')
+    print(f'get_datadir(): {get_datadir()}')
+    print(f'has_changes_to_commit(): {has_changes_to_commit()}')
+    print(f'get_head_commit(): {get_head_commit()}')

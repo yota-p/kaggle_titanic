@@ -1,0 +1,38 @@
+runno: '001'
+
+feature_engineering:
+  method_fillna: '-999'  # -999, forward
+
+cv:
+  name: KFold
+  param:
+    n_splits: 5
+    shuffle: True
+
+target:
+  path: processed/raw_pickle_v1/train.pkl
+  col: Survived
+
+info:
+  path: null
+  cols: null
+
+features:
+  - name: raw
+    path: processed/raw_pickle_v1/train.pkl
+    cols:
+      - PassengerId
+      - Pclass
+      # - Name
+      # - Sex
+      - Age
+      - SibSp
+      - Parch
+      # - Ticket
+      - Fare
+      # - Cabin
+      # - Embarked
+
+test:
+  name: test
+  path: processed/raw_pickle_v1/test.pkl

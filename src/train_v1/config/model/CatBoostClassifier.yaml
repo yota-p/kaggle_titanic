@@ -1,0 +1,7 @@
+model:
+  name: CatBoostClassifier
+  model_param:
+    loss_function: Logloss
+    eval_metric: Logloss
+  train_param:
+    early_stopping_rounds: 5

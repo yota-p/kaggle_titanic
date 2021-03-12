@@ -1,7 +1,7 @@
 runno: '001'
 
 feature_engineering:
-  method_fillna: '-999'  # -999, forward
+  method_fillna: '-999'
 
 cv:
   name: KFold

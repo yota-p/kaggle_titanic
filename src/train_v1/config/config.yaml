@@ -6,6 +6,10 @@ experiment:
 option:
   train: true
   predict: true
+
+random_seed:
+  seed: 42
+  seed_gpu: true
       
 defaults:
   - run: run001

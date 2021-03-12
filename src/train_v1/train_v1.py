@@ -15,6 +15,7 @@ from sklearn.metrics import log_loss, accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold
 from sklearn.ensemble import RandomForestClassifier
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit
+from src.train_v1.util.seeder import seed_everything
 warnings.filterwarnings("ignore")
 
 
@@ -266,8 +267,11 @@ def predict(
 
 @hydra.main(config_path="./config", config_name="config")
 def main(cfg: DictConfig) -> None:
+    # set random seed
+    seed_everything(**cfg.random_seed)
+
     commit = get_head_commit()
-    # Check for changes not commited
+    # check for changes not commited
     if get_exec_env() == 'local':
         if cfg.experiment.tags.exec == 'prd' and has_changes_to_commit():  # check for changes not commited
             raise Exception(f'Changes must be commited before running production!')

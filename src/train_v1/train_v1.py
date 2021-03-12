@@ -298,10 +298,9 @@ def main(cfg: DictConfig) -> None:
     mlflow.log_params(cfg.model.model_param)
     mlflow.log_params(cfg.model.train_param)
 
-    # FE
     train = pd.DataFrame()
 
-    # load feature, info
+    # load feature
     features = []
     for f in cfg.features:
         df = pd.read_pickle(f'{DATA_DIR}/{f.path}').loc[:, f.cols]

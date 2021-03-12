@@ -21,14 +21,14 @@ warnings.filterwarnings("ignore")
 
 
 class NaFiller(BaseTransformer):
-    def __init__(self, method: str, target_cols: List[str]) -> None:
+    def __init__(self, method: str, feat_cols: List[str]) -> None:
         self.method_ = method
-        self.target_cols = target_cols
+        self.feat_cols = feat_cols
         self.mean_: pd.DataFrame = None
 
     def fit(self, X):
         if self.method_ == 'mean':
-            self.mean_ = X[self.target_cols].mean()
+            self.mean_ = X[self.feat_cols].mean()
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -349,10 +349,12 @@ def main(cfg: DictConfig) -> None:
 
     print(f'Input feature shape: {train.shape}')
 
-    # Feature engineering
-    # Fill missing values
-    nfl = NaFiller(cfg.feature_engineering.method_fillna, feat_cols)
-    train = nfl.fit_transform(train)
+    # feature engineering
+    nfl = NaFiller(cfg.feature_engineering.method_fillna, feat_cols)  # fill missing values
+    pipe = [nfl]
+    for p in pipe:
+        train = p.fit_transform(train)
+
     if nfl.mean_ is not None:
         np.save(f'{OUT_DIR}/nafiller_mean.npy', nfl.mean_.values)
 
@@ -377,8 +379,9 @@ def main(cfg: DictConfig) -> None:
         test = pd.read_pickle(f'{DATA_DIR}/{cfg.test.path}')
         sample_submission = pd.read_csv(f'{DATA_DIR}/raw/gender_submission.csv')
 
-        # Fill missing values
-        test = nfl.transform(test)
+        # feature engineering
+        for p in pipe:
+            test = p.transform(test)
 
         pred_df = predict(models, test, feat_cols, cfg.target.col)
         if not pred_df.shape == sample_submission.shape:

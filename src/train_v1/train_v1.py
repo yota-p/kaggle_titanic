@@ -385,7 +385,7 @@ def log_learning_curve(model_name: str, model: Any, fold=0):
         raise ValueError(f'Invalid model_name: {model_name}')
 
 
-def train_KFold(
+def train_gbdt_KFold(
         train: pd.DataFrame,
         features: List[str],
         target: str,
@@ -527,8 +527,8 @@ def main(cfg: DictConfig) -> None:
                 train_cv_nn(train, feat_cols, [cfg.target.col], cfg.model.name, cfg.model.model_param, cfg.model.train_param,
                             cfg.cv, cfg.optimizer, cfg.scheduler, cfg.loss_function, model_paths)
             else:
-                train_KFold(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param,
-                            cfg.model.train_param, cfg.cv.param, OUT_DIR)
+                train_gbdt_KFold(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param,
+                                 cfg.model.train_param, cfg.cv.param, OUT_DIR)
         else:
             raise ValueError(f'Invalid cv: {cfg.cv.name}')
 

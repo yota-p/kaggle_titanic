@@ -12,15 +12,15 @@ import pprint
 import warnings
 from typing import List, Any, Dict  # Tuple
 from omegaconf.dictconfig import DictConfig
-from sklearn.metrics import log_loss, accuracy_score, roc_auc_score
+from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold
-from sklearn.ensemble import RandomForestClassifier
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.nn import BCEWithLogitsLoss
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.nn.modules.loss import _WeightedLoss
 import torch.nn.functional as F
+from src.train_v1.models.RandomForestClassifier2 import RandomForestClassifier2
 from src.train_v1.models.torchnn import ModelV1, EarlyStopping
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit, get_device
 from src.train_v1.util.seeder import seed_everything
@@ -189,15 +189,6 @@ def train_cv_nn(
         ) -> None:
 
     # TODO: implement KFold CV split
-    '''
-    if cv.name == 'nocv':
-        print('Training on full data. Note that validation data overlaps train, which will overfit!')
-        train = df
-        valid = df
-    else:
-        train = df
-        valid = df
-    '''
     train = df
     valid = df
 
@@ -206,6 +197,7 @@ def train_cv_nn(
     valid_set = MarketDataset(valid, features, target_cols)
     valid_loader = DataLoader(valid_set, batch_size=train_param.batch_size, shuffle=False, num_workers=4)
 
+    print('Start training')
     start_time = time.time()
     torch.cuda.empty_cache()
     device = get_device()
@@ -258,57 +250,9 @@ def train_cv_nn(
             print('Early stopping')
             break
     # torch.save(model.state_dict(), model_weights)
+    print('End training')
 
     return None
-
-
-class RandomForestClassifier2(RandomForestClassifier):
-    def __init__(self, **kwargs):
-        self.model = RandomForestClassifier(**kwargs)
-
-    def __getattr__(self, name):
-        # this returns attributes that does not exist in this class
-        return getattr(self.model, name)
-
-    def get_evals_result(self):
-        return self.evals_result_
-
-    def fit(self, X, y, eval_set=None, eval_metrics=None, sample_weight=None):
-        '''
-        Fit Random forest with learning curve.
-        eval_set = [(X_val1, y_val1), (X_val2, y_val2), ...]
-        Note: Once after fitted, add attribute ends with a underscore.
-        This is because sklearn.utils.validation.check_is_fitted()
-        checks if model is fitted by this criterion.
-        '''
-        n_estimators = self.model.get_params()['n_estimators']
-        to_validate = True if (eval_set is not None and eval_metrics is not None) else False
-
-        # Validate by calculating metrics for various n_estimators
-        if to_validate:
-            # initialize evals_result
-            self.evals_result_ = {}
-            for i in range(0, len(eval_set)):
-                # Example: evals_result = {'valid_0': {'logloss': []}, 'valid-1': {'AUC': []}}
-                self.evals_result_.update({f'valid{i}': {f'{eval_metrics}': []}})
-
-            # train through different n_estimators
-            for i in range(1, n_estimators+1):
-                msg = f'[{i}]'
-                self.model.set_params(n_estimators=i)
-                self.model.fit(X, y, sample_weight)
-                for j, (X_val, y_val) in enumerate(eval_set):
-                    pred_val = self.model.predict(X_val)
-                    if eval_metrics == 'logloss':
-                        metric = log_loss(y_val, pred_val)
-                    else:
-                        raise ValueError(f'Invalid eval_metrics: {eval_metrics}')
-                    self.evals_result_[f'valid{j}'][f'{eval_metrics}'].append(metric)
-                    msg = msg + f'\tvalid{j}-{eval_metrics}: {metric}'
-                print(msg)
-        else:
-            self.model.fit(X, y, sample_weight)
-            self.evals_result_ = None
 
 
 def get_model(
@@ -456,7 +400,7 @@ def train_KFold(
     4. Calculate validation metrics
     5. Calculate average validation metrics
     '''
-    # store scores in schema: {'tr_acc': {'fold': [0.1, 0.8, ...], 'avg': 0.005}, ...}
+    # store scores in schema: {'train-acc': {'fold': [0.1, 0.8, ...], 'avg': 0.005}, ...}
     metrics = ['train-acc', 'valid-acc', 'train-auc', 'valid-auc']
     scores: dict = {}
     for metric in metrics:
@@ -576,10 +520,10 @@ def main(cfg: DictConfig) -> None:
         if cfg.cv.name == 'nocv':
             train_full(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param, cfg.model.train_param, OUT_DIR)
         elif cfg.cv.name == 'KFold':
-            # TODO: this is temporal implementation. Integrate nn and gbdt later!
             if cfg.model.name == 'torch_v1':
-                model_paths = [f'{OUT_DIR}/model_0.pth']
-                train_cv_nn(train, feat_cols, [cfg.target.col], cfg.model.name, cfg.model.model_param, cfg.model.train_param, cfg.cv.param, model_paths, cfg)
+                model_paths = [f'{OUT_DIR}/model_{i}.pth' for i in cfg.cv.param.n_splits]
+                train_cv_nn(train, feat_cols, [cfg.target.col], cfg.model.name, cfg.model.model_param,
+                            cfg.model.train_param, cfg.cv.param, model_paths, cfg)
             else:
                 train_KFold(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param,
                             cfg.model.train_param, cfg.cv.param, OUT_DIR)

@@ -177,20 +177,22 @@ def inference_fn(model, dataloader, device, target_cols):
 
 
 def train_cv_nn(
-        df: pd.DataFrame,
+        train_df: pd.DataFrame,
         features: List[str],
         target_cols: List[str],
         model_name: str,
         model_param: DictConfig,
         train_param: DictConfig,
         cv: DictConfig,
-        model_save_paths: List[str],
-        cfg
+        optimizer: DictConfig,
+        scheduler: DictConfig,
+        loss_function: DictConfig,
+        model_save_paths: List[str]
         ) -> None:
 
     # TODO: implement KFold CV split
-    train = df
-    valid = df
+    train = train_df
+    valid = train_df
 
     train_set = MarketDataset(train, features, target_cols)
     train_loader = DataLoader(train_set, batch_size=train_param.batch_size, shuffle=True, num_workers=4)
@@ -208,25 +210,25 @@ def train_cv_nn(
                 target_cols=target_cols,
                 device=device)
 
-    optimizer = get_optimizer(
-                    optimizer_name=cfg.optimizer.name,
-                    param=cfg.optimizer.param,
+    opt = get_optimizer(
+                    optimizer_name=optimizer.name,
+                    param=optimizer.param,
                     model_param=model.parameters())
 
-    scheduler = get_scheduler(
-                    scheduler_name=cfg.scheduler.name,
-                    param=cfg.scheduler.param,
+    sch = get_scheduler(
+                    scheduler_name=scheduler.name,
+                    param=scheduler.param,
                     steps_per_epoch=len(train_loader),
-                    optimizer=optimizer)
+                    optimizer=opt)
 
     loss_fn = get_loss_function(
-                loss_function_name=cfg.loss_function.name,
-                param=cfg.loss_function.param)
+                loss_function_name=loss_function.name,
+                param=loss_function.param)
 
     es = EarlyStopping(patience=train_param.early_stopping_rounds, mode='max')
 
     for epoch in range(train_param.epochs):
-        train_loss = train_fn(model, optimizer, scheduler, loss_fn, train_loader, device)
+        train_loss = train_fn(model, opt, sch, loss_fn, train_loader, device)
 
         valid_pred = inference_fn(model, valid_loader, device, target_cols)
         valid_auc = roc_auc_score(valid[target_cols].values, valid_pred)
@@ -521,9 +523,9 @@ def main(cfg: DictConfig) -> None:
             train_full(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param, cfg.model.train_param, OUT_DIR)
         elif cfg.cv.name == 'KFold':
             if cfg.model.name == 'torch_v1':
-                model_paths = [f'{OUT_DIR}/model_{i}.pth' for i in cfg.cv.param.n_splits]
-                train_cv_nn(train, feat_cols, [cfg.target.col], cfg.model.name, cfg.model.model_param,
-                            cfg.model.train_param, cfg.cv.param, model_paths, cfg)
+                model_paths = [f'{OUT_DIR}/model_{i}.pth' for i in range(cfg.cv.param.n_splits)]
+                train_cv_nn(train, feat_cols, [cfg.target.col], cfg.model.name, cfg.model.model_param, cfg.model.train_param,
+                            cfg.cv, cfg.optimizer, cfg.scheduler, cfg.loss_function, model_paths)
             else:
                 train_KFold(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param,
                             cfg.model.train_param, cfg.cv.param, OUT_DIR)

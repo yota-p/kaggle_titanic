@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 import pandas as pd
 import numpy as np
 import xgboost as xgb
@@ -14,7 +15,14 @@ from omegaconf.dictconfig import DictConfig
 from sklearn.metrics import log_loss, accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold
 from sklearn.ensemble import RandomForestClassifier
-from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit
+import torch
+from torch.utils.data import DataLoader, Dataset
+from torch.nn import BCEWithLogitsLoss
+from torch.optim.lr_scheduler import OneCycleLR
+from torch.nn.modules.loss import _WeightedLoss
+import torch.nn.functional as F
+from src.train_v1.models.torchnn import ModelV1, EarlyStopping
+from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit, get_device
 from src.train_v1.util.seeder import seed_everything
 from src.train_v1.features.basetransformer import BaseTransformer
 warnings.filterwarnings("ignore")
@@ -43,6 +51,215 @@ class NaFiller(BaseTransformer):
         else:
             raise ValueError(f'Invalid method: {self.method}')
         return X
+
+
+class SmoothBCEwLogits(_WeightedLoss):
+    def __init__(self, weight=None, reduction='mean', smoothing=0.0):
+        super().__init__(weight=weight, reduction=reduction)
+        self.smoothing = smoothing
+        self.weight = weight
+        self.reduction = reduction
+
+    @staticmethod
+    def _smooth(targets: torch.Tensor, n_labels: int, smoothing=0.0):
+        assert 0 <= smoothing < 1
+        with torch.no_grad():
+            targets = targets * (1.0 - smoothing) + 0.5 * smoothing
+        return targets
+
+    def forward(self, inputs, targets):
+        targets = SmoothBCEwLogits._smooth(targets, inputs.size(-1), self.smoothing)
+        loss = F.binary_cross_entropy_with_logits(inputs, targets, self.weight)
+
+        if self.reduction == 'sum':
+            loss = loss.sum()
+        elif self.reduction == 'mean':
+            loss = loss.mean()
+
+        return loss
+
+
+class MarketDataset(Dataset):
+    def __init__(self, df, all_feat_cols: List[str], target_cols: List[str]):
+        self.features = df[all_feat_cols].values
+        self.label = df[target_cols].values.reshape(-1, len(target_cols))
+
+    def __len__(self):
+        return len(self.label)
+
+    def __getitem__(self, idx):
+        return {
+            'features': torch.tensor(self.features[idx], dtype=torch.float),
+            'label': torch.tensor(self.label[idx], dtype=torch.float)
+        }
+
+
+def get_optimizer(
+        optimizer_name: str,
+        param: DictConfig,
+        model_param) -> torch.optim.Optimizer:
+    if optimizer_name == 'Adam':
+        return torch.optim.Adam(model_param, lr=param.lr, weight_decay=param.weight_decay)
+        # optimizer = Nadam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+        # optimizer = Lookahead(optimizer=optimizer, k=10, alpha=0.5)
+    else:
+        raise ValueError(f'Invalid optimizer: {optimizer_name}')
+
+
+def get_scheduler(
+        scheduler_name: str,
+        param: DictConfig,
+        steps_per_epoch: int,
+        optimizer: torch.optim.Optimizer) -> Any:
+    if scheduler_name is None:
+        return None
+    elif scheduler_name == 'OneCycleLR':
+        return OneCycleLR(
+                    optimizer=param.optimizer,
+                    pct_start=param.pct_start,
+                    div_factor=param.dev_factor,
+                    max_lr=param.max_lr,
+                    epochs=param.epochs,
+                    steps_per_epoch=steps_per_epoch)
+    else:
+        raise ValueError(f'Invalid scheduler: {scheduler_name}')
+
+
+def get_loss_function(
+        loss_function_name: str,
+        param: DictConfig) -> torch.nn.modules.loss._Loss:  # _WeightedLoss or BCEWithLogitsLoss
+
+    if loss_function_name == 'SmoothBCEwLogits':
+        return SmoothBCEwLogits(smoothing=param.smoothing)
+    elif loss_function_name == 'BCEWithLogitsLoss':
+        return BCEWithLogitsLoss()
+    else:
+        raise ValueError(f'Invalid loss functin: {loss_function_name}')
+
+
+def train_fn(model, optimizer, scheduler, loss_fn, dataloader, device):
+    model.train()
+    final_loss = 0
+
+    for data in dataloader:
+        optimizer.zero_grad()
+        features = data['features'].to(device)
+        label = data['label'].to(device)
+        outputs = model(features)
+        loss = loss_fn(outputs, label)
+        loss.backward()
+        optimizer.step()
+        if scheduler:
+            scheduler.step()
+
+        final_loss += loss.item()
+
+    final_loss /= len(dataloader)
+
+    return final_loss
+
+
+def inference_fn(model, dataloader, device, target_cols):
+    model.eval()
+    preds = []
+
+    for data in dataloader:
+        features = data['features'].to(device)
+
+        with torch.no_grad():
+            outputs = model(features)
+
+        preds.append(outputs.sigmoid().detach().cpu().numpy())
+
+    preds = np.concatenate(preds).reshape(-1, len(target_cols))
+
+    return preds
+
+
+def train_cv_nn(
+        df: pd.DataFrame,
+        features: List[str],
+        target_cols: List[str],
+        model_name: str,
+        model_param: DictConfig,
+        train_param: DictConfig,
+        cv: DictConfig,
+        model_save_paths: List[str],
+        cfg
+        ) -> None:
+
+    # TODO: implement KFold CV split
+    '''
+    if cv.name == 'nocv':
+        print('Training on full data. Note that validation data overlaps train, which will overfit!')
+        train = df
+        valid = df
+    else:
+        train = df
+        valid = df
+    '''
+    train = df
+    valid = df
+
+    train_set = MarketDataset(train, features, target_cols)
+    train_loader = DataLoader(train_set, batch_size=train_param.batch_size, shuffle=True, num_workers=4)
+    valid_set = MarketDataset(valid, features, target_cols)
+    valid_loader = DataLoader(valid_set, batch_size=train_param.batch_size, shuffle=False, num_workers=4)
+
+    start_time = time.time()
+    torch.cuda.empty_cache()
+    device = get_device()
+    model = get_model(
+                model_name,
+                model_param,
+                feat_cols=features,
+                target_cols=target_cols,
+                device=device)
+
+    optimizer = get_optimizer(
+                    optimizer_name=cfg.optimizer.name,
+                    param=cfg.optimizer.param,
+                    model_param=model.parameters())
+
+    scheduler = get_scheduler(
+                    scheduler_name=cfg.scheduler.name,
+                    param=cfg.scheduler.param,
+                    steps_per_epoch=len(train_loader),
+                    optimizer=optimizer)
+
+    loss_fn = get_loss_function(
+                loss_function_name=cfg.loss_function.name,
+                param=cfg.loss_function.param)
+
+    es = EarlyStopping(patience=train_param.early_stopping_rounds, mode='max')
+
+    for epoch in range(train_param.epochs):
+        train_loss = train_fn(model, optimizer, scheduler, loss_fn, train_loader, device)
+
+        valid_pred = inference_fn(model, valid_loader, device, target_cols)
+        valid_auc = roc_auc_score(valid[target_cols].values, valid_pred)
+        # valid_logloss = log_loss(valid[target_cols].values, valid_pred)
+        valid_pred = np.median(valid_pred, axis=1)
+        valid_pred = np.where(valid_pred >= 0.5, 1, 0).astype(int)
+        '''
+        valid_u_score = utility_score_bincount(
+                            date=valid.date.values, weight=valid.weight.values,
+                            resp=valid.resp.values, action=valid_pred)
+        score = {
+            'epoch': epoch,
+            'train_loss': train_loss,
+            'valid_u_score': valid_u_score,
+            'valid_auc': valid_auc,
+            'time': (time.time() - start_time) / 60}
+        pprint.pprint(score)
+        '''
+        es(valid_auc, model, model_path=model_save_paths[0])
+        if es.early_stop:
+            print('Early stopping')
+            break
+    # torch.save(model.state_dict(), model_weights)
+
+    return None
 
 
 class RandomForestClassifier2(RandomForestClassifier):
@@ -94,7 +311,12 @@ class RandomForestClassifier2(RandomForestClassifier):
             self.evals_result_ = None
 
 
-def get_model(model_name: str, model_param: DictConfig) -> Any:
+def get_model(
+        model_name: str,
+        model_param: DictConfig,
+        feat_cols: List[str] = None,
+        target_cols: List[str] = None,
+        device: torch.device = None) -> Any:
     if model_name == 'XGBClassifier':
         if is_gpu():  # check if you're utilizing gpu if present
             assert model_param.tree_method == 'gpu_hist'
@@ -105,6 +327,10 @@ def get_model(model_name: str, model_param: DictConfig) -> Any:
         return catboost.CatBoostClassifier(**model_param)
     elif model_name == 'RandomForestClassifier2':
         return RandomForestClassifier2(**model_param)
+    elif model_name == 'torch_v1':
+        model = ModelV1(feat_cols, target_cols, model_param.dropout_rate, model_param.hidden_size)
+        model.to(device)
+        return model
     else:
         raise ValueError(f'Invalid model_name: {model_name}')
 
@@ -275,24 +501,10 @@ def train_KFold(
     return scores
 
 
-def predict(
-        models: List[Any],
-        test: pd.DataFrame,
-        feature_col: List[str],
-        target_col: str) -> pd.DataFrame:
-
-    print('Start predicting')
-    y_pred = np.zeros(len(test))
-    for model in models:
-        y_pred += model.predict(test[feature_col].values) / len(models)
-    pred_df = pd.DataFrame(data={'PassengerId': test['PassengerId'].values, 'Survived': y_pred})
-
-    print('End predicting')
-    return pred_df
-
-
 @hydra.main(config_path="./config", config_name="config")
 def main(cfg: DictConfig) -> None:
+    pprint.pprint(dict(cfg))
+
     # set random seed
     seed_everything(**cfg.random_seed)
 
@@ -302,10 +514,11 @@ def main(cfg: DictConfig) -> None:
         if cfg.experiment.tags.exec == 'prd' and has_changes_to_commit():  # check for changes not commited
             raise Exception(f'Changes must be commited before running production!')
 
-    pprint.pprint(dict(cfg))
     DATA_DIR = get_datadir()
     OUT_DIR = f'{DATA_DIR}/{cfg.experiment.name}/{cfg.experiment.tags.exec}{cfg.runno}'
     Path(OUT_DIR).mkdir(exist_ok=True, parents=True)
+
+    device = get_device()
 
     # follow these sequences: uri > experiment > run > others
     tracking_uri = 'http://mlflow-tracking-server:5000'
@@ -363,30 +576,65 @@ def main(cfg: DictConfig) -> None:
         if cfg.cv.name == 'nocv':
             train_full(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param, cfg.model.train_param, OUT_DIR)
         elif cfg.cv.name == 'KFold':
-            train_KFold(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param,
-                        cfg.model.train_param, cfg.cv.param, OUT_DIR)
+            # TODO: this is temporal implementation. Integrate nn and gbdt later!
+            if cfg.model.name == 'torch_v1':
+                model_paths = [f'{OUT_DIR}/model_0.pth']
+                train_cv_nn(train, feat_cols, [cfg.target.col], cfg.model.name, cfg.model.model_param, cfg.model.train_param, cfg.cv.param, model_paths, cfg)
+            else:
+                train_KFold(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param,
+                            cfg.model.train_param, cfg.cv.param, OUT_DIR)
         else:
             raise ValueError(f'Invalid cv: {cfg.cv.name}')
 
     # Predict
     if cfg.option.predict:
-        models = []
-        for i in range(cfg.cv.param.n_splits):
-            model = pd.read_pickle(open(f'{OUT_DIR}/model_{i}.pkl', 'rb'))
-            models.append(model)
-
         # load data
         test = pd.read_pickle(f'{DATA_DIR}/{cfg.test.path}')
         sample_submission = pd.read_csv(f'{DATA_DIR}/raw/gender_submission.csv')
+        y_pred = np.zeros(len(test))
+
+        # load model
+        models = []
+        if cfg.model.name == 'torch_v1':
+            model_paths = [f'{OUT_DIR}/model_{i}.pth' for i in range(cfg.cv.param.n_splits)]
+            for model_path in model_paths:
+                torch.cuda.empty_cache()
+                model = get_model(cfg.model.name, cfg.model.model_param, feat_cols=feat_cols, target_cols=[cfg.target.col], device=device)
+                model.to(device)
+                model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+                model.eval()
+                models.append(model)
+        else:
+            model_paths = [f'{OUT_DIR}/model_{i}.pkl' for i in range(cfg.cv.param.n_splits)]
+            for model_path in model_paths:
+                model = pd.read_pickle(open(model_path, 'rb'))
+                models.append(model)
 
         # feature engineering
         for p in pipe:
             test = p.transform(test)
 
-        pred_df = predict(models, test, feat_cols, cfg.target.col)
+        print('Start predicting')
+        for model in models:  # ensemble models
+            if cfg.model.name == 'torch_v1':
+                # 1. create prediction as torch.tensor
+                # 2. convert torch.tensor(418, 1) -> np.ndarray(418, 1) -> np.ndarray(418,)
+                # 3. divide by len(model)
+                y_pred += model(torch.tensor(test[feat_cols].values, dtype=torch.float).to(device)) \
+                    .sigmoid().detach().cpu() \
+                    .numpy()[:, 0] \
+                    / len(models)
+            else:
+                y_pred += model.predict(test[feat_cols].values) / len(models)
+
+        y_pred = np.where(y_pred >= 0.5, 1, 0).astype(int)
+        pred_df = pd.DataFrame(data={'PassengerId': test['PassengerId'].values, 'Survived': y_pred})
+
         if not pred_df.shape == sample_submission.shape:
             raise Exception(f'Incorrect pred_df.shape: {pred_df.shape}')
-        pred_df.to_csv(f'{OUT_DIR}/submission.csv')
+
+        pred_df.to_csv(f'{OUT_DIR}/submission.csv', index=False)
+        print('End predicting')
 
     return None
 

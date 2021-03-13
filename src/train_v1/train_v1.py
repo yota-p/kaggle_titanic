@@ -12,7 +12,7 @@ import pprint
 import warnings
 from typing import List, Any, Dict  # Tuple
 from omegaconf.dictconfig import DictConfig
-from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.metrics import accuracy_score, roc_auc_score, log_loss
 from sklearn.model_selection import KFold
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -79,21 +79,6 @@ class SmoothBCEwLogits(_WeightedLoss):
         return loss
 
 
-class MarketDataset(Dataset):
-    def __init__(self, df, all_feat_cols: List[str], target_cols: List[str]):
-        self.features = df[all_feat_cols].values
-        self.label = df[target_cols].values.reshape(-1, len(target_cols))
-
-    def __len__(self):
-        return len(self.label)
-
-    def __getitem__(self, idx):
-        return {
-            'features': torch.tensor(self.features[idx], dtype=torch.float),
-            'label': torch.tensor(self.label[idx], dtype=torch.float)
-        }
-
-
 def get_optimizer(
         optimizer_name: str,
         param: DictConfig,
@@ -139,7 +124,7 @@ def get_loss_function(
 
 def train_fn(model, optimizer, scheduler, loss_fn, dataloader, device):
     model.train()
-    final_loss = 0
+    avg_loss = 0
 
     for data in dataloader:
         optimizer.zero_grad()
@@ -152,11 +137,9 @@ def train_fn(model, optimizer, scheduler, loss_fn, dataloader, device):
         if scheduler:
             scheduler.step()
 
-        final_loss += loss.item()
+        avg_loss += loss.item() / len(dataloader)
 
-    final_loss /= len(dataloader)
-
-    return final_loss
+    return avg_loss
 
 
 def inference_fn(model, dataloader, device, target_cols):
@@ -176,84 +159,133 @@ def inference_fn(model, dataloader, device, target_cols):
     return preds
 
 
-def train_cv_nn(
+class TitanicDataset(Dataset):
+    def __init__(self, df, all_feat_cols: List[str], target_cols: List[str]):
+        self.features = df[all_feat_cols].values
+        self.label = df[target_cols].values.reshape(-1, len(target_cols))
+
+    def __len__(self):
+        return len(self.label)
+
+    def __getitem__(self, idx):
+        return {
+            'features': torch.tensor(self.features[idx], dtype=torch.float),
+            'label': torch.tensor(self.label[idx], dtype=torch.float)
+        }
+
+
+def train_torch_KFold(
         train_df: pd.DataFrame,
-        features: List[str],
+        feat_cols: List[str],
         target_cols: List[str],
         model_name: str,
         model_param: DictConfig,
         train_param: DictConfig,
-        cv: DictConfig,
+        cv_param: DictConfig,
         optimizer: DictConfig,
         scheduler: DictConfig,
         loss_function: DictConfig,
-        model_save_paths: List[str]
+        OUT_DIR: str
         ) -> None:
+    '''
+    1. Create model
+    2. Split training data into folds
+    3. Train model
+    4. Calculate validation metrics
+    5. Calculate average validation metrics
+    '''
+    # store scores in schema: {'train-acc': {'fold': [0.1, 0.8, ...], 'avg': 0.005}, ...}
+    metrics = ['train-acc', 'valid-acc', 'train-auc', 'valid-auc']
+    scores: dict = {}
+    for metric in metrics:
+        scores[metric] = {'vsfold': [], 'avg': None}
 
-    # TODO: implement KFold CV split
-    train = train_df
-    valid = train_df
-
-    train_set = MarketDataset(train, features, target_cols)
-    train_loader = DataLoader(train_set, batch_size=train_param.batch_size, shuffle=True, num_workers=4)
-    valid_set = MarketDataset(valid, features, target_cols)
-    valid_loader = DataLoader(valid_set, batch_size=train_param.batch_size, shuffle=False, num_workers=4)
-
-    print('Start training')
-    start_time = time.time()
-    torch.cuda.empty_cache()
     device = get_device()
-    model = get_model(
-                model_name,
-                model_param,
-                feat_cols=features,
-                target_cols=target_cols,
-                device=device)
+    target = target_cols[0]
 
-    opt = get_optimizer(
-                    optimizer_name=optimizer.name,
-                    param=optimizer.param,
-                    model_param=model.parameters())
+    kf = KFold(**cv_param)
+    for fold, (tr, te) in enumerate(kf.split(train_df[target].values, train_df[target].values)):
+        print(f'Starting fold: {fold}, train size: {len(tr)}, validation size: {len(te)}')
 
-    sch = get_scheduler(
-                    scheduler_name=scheduler.name,
-                    param=scheduler.param,
-                    steps_per_epoch=len(train_loader),
-                    optimizer=opt)
+        # split data
+        train = train_df.loc[tr, :]
+        valid = train_df.loc[te, :]
+        y_tr = train_df.loc[tr, target]
+        y_val = train_df.loc[te, target]
 
-    loss_fn = get_loss_function(
-                loss_function_name=loss_function.name,
-                param=loss_function.param)
+        # create dataset
+        train_set = TitanicDataset(train, feat_cols, target_cols)
+        train_loader = DataLoader(train_set, batch_size=train_param.batch_size, shuffle=True, num_workers=4)
+        valid_set = TitanicDataset(valid, feat_cols, target_cols)
+        valid_loader = DataLoader(valid_set, batch_size=train_param.batch_size, shuffle=False, num_workers=4)
 
-    es = EarlyStopping(patience=train_param.early_stopping_rounds, mode='max')
+        torch.cuda.empty_cache()
+        model = get_model(
+                    model_name,
+                    model_param,
+                    feat_cols=feat_cols,
+                    target_cols=target_cols,
+                    device=device)
 
-    for epoch in range(train_param.epochs):
-        train_loss = train_fn(model, opt, sch, loss_fn, train_loader, device)
+        opt = get_optimizer(
+                        optimizer_name=optimizer.name,
+                        param=optimizer.param,
+                        model_param=model.parameters())
 
-        valid_pred = inference_fn(model, valid_loader, device, target_cols)
-        valid_auc = roc_auc_score(valid[target_cols].values, valid_pred)
-        # valid_logloss = log_loss(valid[target_cols].values, valid_pred)
-        valid_pred = np.median(valid_pred, axis=1)
-        valid_pred = np.where(valid_pred >= 0.5, 1, 0).astype(int)
-        '''
-        valid_u_score = utility_score_bincount(
-                            date=valid.date.values, weight=valid.weight.values,
-                            resp=valid.resp.values, action=valid_pred)
+        sch = get_scheduler(
+                        scheduler_name=scheduler.name,
+                        param=scheduler.param,
+                        steps_per_epoch=len(train_loader),
+                        optimizer=opt)
+
+        loss_fn = get_loss_function(
+                    loss_function_name=loss_function.name,
+                    param=loss_function.param)
+
+        es = EarlyStopping(patience=train_param.early_stopping_rounds, mode='max')
+
+        for epoch in range(train_param.epochs):
+            train_loss = train_fn(model, opt, sch, loss_fn, train_loader, device)
+
+            # calculate validation auc for early stopping
+            pred_val = model(valid_set[:]['features'])
+            # pred_val = np.where(pred_val >= 0.5, 1, 0).astype(int)
+            # valid_loss = loss_fn(pred_val, y_val)
+            # TODO: implement validation loss
+            print(pred_val.detach().numpy()[:, 0].shape)
+            print(y_val.values.shape)
+            valid_loss = loss_fn(pred_val.detach().numpy()[:, 0], y_val.values)
+            print(f'fold: {fold}, epoch: {epoch}, train_loss: {train_loss}, valid_loss: {valid_loss}')
+            mlflow.log_metric(f'fold{fold}_train-loss_vsepoch', train_loss, step=epoch)
+            mlflow.log_metric(f'fold{fold}_valid-loss_vsepoch', valid_loss, step=epoch)
+
+            valid_auc = roc_auc_score(y_val, pred_val)
+            es(valid_auc, model, model_path=f'{OUT_DIR}/model_{fold}.pth')
+            if es.early_stop:
+                print('Early stopping')
+                break
+
+        # log metrics per fold
+        pred_tr = inference_fn(model, train_loader, device, target_cols)
+        pred_val = inference_fn(model, valid_loader, device, target_cols)
+        pred_tr = np.where(pred_tr >= 0.5, 1, 0).astype(int)
+        pred_val = np.where(pred_val >= 0.5, 1, 0).astype(int)
         score = {
-            'epoch': epoch,
-            'train_loss': train_loss,
-            'valid_u_score': valid_u_score,
-            'valid_auc': valid_auc,
-            'time': (time.time() - start_time) / 60}
-        pprint.pprint(score)
-        '''
-        es(valid_auc, model, model_path=model_save_paths[0])
-        if es.early_stop:
-            print('Early stopping')
-            break
-    # torch.save(model.state_dict(), model_weights)
-    print('End training')
+            metrics[0]: accuracy_score(y_tr, pred_tr),
+            metrics[1]: accuracy_score(y_val, pred_val),
+            metrics[2]: roc_auc_score(y_tr, pred_tr),
+            metrics[3]: roc_auc_score(y_val, pred_val)
+            }
+        for metric in metrics:
+            scores[metric]['vsfold'].append(score[metric])
+            mlflow.log_metric(f'{metric}_vsfold', score[metric], step=fold)
 
+    # log metrics averaged over folds
+    for metric in metrics:
+        scores[metric]['avg'] = np.array(scores[metric]['vsfold']).mean()
+        mlflow.log_metric(f'{metric}_foldavg', scores[metric]['avg'])
+
+    print('End training')
     return None
 
 
@@ -387,7 +419,7 @@ def log_learning_curve(model_name: str, model: Any, fold=0):
 
 def train_gbdt_KFold(
         train: pd.DataFrame,
-        features: List[str],
+        feat_cols: List[str],
         target: str,
         model_name: str,
         model_param: DictConfig,
@@ -411,7 +443,7 @@ def train_gbdt_KFold(
     kf = KFold(**cv_param)
     for fold, (tr, te) in enumerate(kf.split(train[target].values, train[target].values)):
         print(f'Starting fold: {fold}, train size: {len(tr)}, validation size: {len(te)}')
-        X_tr, X_val = train.loc[tr, features].values, train.loc[te, features].values
+        X_tr, X_val = train.loc[tr, feat_cols].values, train.loc[te, feat_cols].values
         y_tr, y_val = train.loc[tr, target].values, train.loc[te, target].values
         model = get_model(model_name, model_param)
         model.fit(X_tr, y_tr,
@@ -520,15 +552,18 @@ def main(cfg: DictConfig) -> None:
     # Train
     if cfg.option.train:
         if cfg.cv.name == 'nocv':
-            train_full(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param, cfg.model.train_param, OUT_DIR)
+            train_full(
+                train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param,
+                cfg.model.train_param, OUT_DIR)
         elif cfg.cv.name == 'KFold':
             if cfg.model.name == 'torch_v1':
-                model_paths = [f'{OUT_DIR}/model_{i}.pth' for i in range(cfg.cv.param.n_splits)]
-                train_cv_nn(train, feat_cols, [cfg.target.col], cfg.model.name, cfg.model.model_param, cfg.model.train_param,
-                            cfg.cv, cfg.optimizer, cfg.scheduler, cfg.loss_function, model_paths)
+                train_torch_KFold(
+                    train, feat_cols, [cfg.target.col], cfg.model.name, cfg.model.model_param, cfg.model.train_param,
+                    cfg.cv.param, cfg.optimizer, cfg.scheduler, cfg.loss_function, OUT_DIR)
             else:
-                train_gbdt_KFold(train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param,
-                                 cfg.model.train_param, cfg.cv.param, OUT_DIR)
+                train_gbdt_KFold(
+                    train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param, cfg.model.train_param,
+                    cfg.cv.param, OUT_DIR)
         else:
             raise ValueError(f'Invalid cv: {cfg.cv.name}')
 

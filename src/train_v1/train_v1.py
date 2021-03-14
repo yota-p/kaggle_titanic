@@ -1,5 +1,4 @@
 from pathlib import Path
-import time
 import pandas as pd
 import numpy as np
 import xgboost as xgb
@@ -12,16 +11,14 @@ import pprint
 import warnings
 from typing import List, Any, Dict  # Tuple
 from omegaconf.dictconfig import DictConfig
-from sklearn.metrics import accuracy_score, roc_auc_score, log_loss
+from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.nn import BCEWithLogitsLoss
-from torch.optim.lr_scheduler import OneCycleLR
-from torch.nn.modules.loss import _WeightedLoss
-import torch.nn.functional as F
+from torch.optim.lr_scheduler import OneCycleLR, ExponentialLR
 from src.train_v1.models.RandomForestClassifier2 import RandomForestClassifier2
-from src.train_v1.models.torchnn import ModelV1, EarlyStopping
+from src.train_v1.models.torchnn import ModelV1, EarlyStopping, SmoothBCEwLogits
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit, get_device
 from src.train_v1.util.seeder import seed_everything
 from src.train_v1.features.basetransformer import BaseTransformer
@@ -53,30 +50,28 @@ class NaFiller(BaseTransformer):
         return X
 
 
-class SmoothBCEwLogits(_WeightedLoss):
-    def __init__(self, weight=None, reduction='mean', smoothing=0.0):
-        super().__init__(weight=weight, reduction=reduction)
-        self.smoothing = smoothing
-        self.weight = weight
-        self.reduction = reduction
-
-    @staticmethod
-    def _smooth(targets: torch.Tensor, n_labels: int, smoothing=0.0):
-        assert 0 <= smoothing < 1
-        with torch.no_grad():
-            targets = targets * (1.0 - smoothing) + 0.5 * smoothing
-        return targets
-
-    def forward(self, inputs, targets):
-        targets = SmoothBCEwLogits._smooth(targets, inputs.size(-1), self.smoothing)
-        loss = F.binary_cross_entropy_with_logits(inputs, targets, self.weight)
-
-        if self.reduction == 'sum':
-            loss = loss.sum()
-        elif self.reduction == 'mean':
-            loss = loss.mean()
-
-        return loss
+def get_model(
+        model_name: str,
+        model_param: DictConfig,
+        feat_cols: List[str] = None,
+        target_cols: List[str] = None,
+        device: torch.device = None) -> Any:
+    if model_name == 'XGBClassifier':
+        if is_gpu():  # check if you're utilizing gpu if present
+            assert model_param.tree_method == 'gpu_hist'
+        return xgb.XGBClassifier(**model_param)
+    elif model_name == 'LGBMClassifier':
+        return lgb.LGBMClassifier(**model_param)
+    elif model_name == 'CatBoostClassifier':
+        return catboost.CatBoostClassifier(**model_param)
+    elif model_name == 'RandomForestClassifier2':
+        return RandomForestClassifier2(**model_param)
+    elif model_name == 'torch_v1':
+        model = ModelV1(feat_cols, target_cols, model_param.dropout_rate, model_param.hidden_size)
+        model.to(device)
+        return model
+    else:
+        raise ValueError(f'Invalid model_name: {model_name}')
 
 
 def get_optimizer(
@@ -93,19 +88,25 @@ def get_optimizer(
 
 def get_scheduler(
         scheduler_name: str,
-        param: DictConfig,
+        scheduler_param: DictConfig,
         steps_per_epoch: int,
         optimizer: torch.optim.Optimizer) -> Any:
     if scheduler_name is None:
         return None
     elif scheduler_name == 'OneCycleLR':
         return OneCycleLR(
-                    optimizer=param.optimizer,
-                    pct_start=param.pct_start,
-                    div_factor=param.dev_factor,
-                    max_lr=param.max_lr,
-                    epochs=param.epochs,
+                    optimizer=optimizer,
+                    pct_start=scheduler_param.pct_start,
+                    div_factor=scheduler_param.div_factor,
+                    max_lr=scheduler_param.max_lr,
+                    epochs=scheduler_param.epochs,
                     steps_per_epoch=steps_per_epoch)
+    elif scheduler_name == 'ExponentialLR':
+        return ExponentialLR(
+                    optimizer=optimizer,
+                    gamma=scheduler_param.gamma,
+                    last_epoch=scheduler_param.last_epoch,
+                    verbose=scheduler_param.verbose)
     else:
         raise ValueError(f'Invalid scheduler: {scheduler_name}')
 
@@ -160,8 +161,8 @@ def inference_fn(model, dataloader, device, target_cols):
 
 
 class TitanicDataset(Dataset):
-    def __init__(self, df, all_feat_cols: List[str], target_cols: List[str]):
-        self.features = df[all_feat_cols].values
+    def __init__(self, df, feat_cols: List[str], target_cols: List[str]):
+        self.features = df[feat_cols].values
         self.label = df[target_cols].values.reshape(-1, len(target_cols))
 
     def __len__(self):
@@ -234,7 +235,7 @@ def train_torch_KFold(
 
         sch = get_scheduler(
                         scheduler_name=scheduler.name,
-                        param=scheduler.param,
+                        scheduler_param=scheduler.param,
                         steps_per_epoch=len(train_loader),
                         optimizer=opt)
 
@@ -248,18 +249,16 @@ def train_torch_KFold(
             train_loss = train_fn(model, opt, sch, loss_fn, train_loader, device)
 
             # calculate validation auc for early stopping
-            pred_val = model(valid_set[:]['features'])
-            # pred_val = np.where(pred_val >= 0.5, 1, 0).astype(int)
-            # valid_loss = loss_fn(pred_val, y_val)
-            # TODO: implement validation loss
-            print(pred_val.detach().numpy()[:, 0].shape)
-            print(y_val.values.shape)
-            valid_loss = loss_fn(pred_val.detach().numpy()[:, 0], y_val.values)
+            with torch.no_grad():
+                feature_val = valid_set[:]['features'].to(device)
+                label_val = valid_set[:]['label'].to(device)
+                pred_val = model(feature_val)
+                valid_loss = loss_fn(pred_val, label_val).item()
             print(f'fold: {fold}, epoch: {epoch}, train_loss: {train_loss}, valid_loss: {valid_loss}')
             mlflow.log_metric(f'fold{fold}_train-loss_vsepoch', train_loss, step=epoch)
             mlflow.log_metric(f'fold{fold}_valid-loss_vsepoch', valid_loss, step=epoch)
 
-            valid_auc = roc_auc_score(y_val, pred_val)
+            valid_auc = roc_auc_score(y_val, pred_val.detach().numpy())
             es(valid_auc, model, model_path=f'{OUT_DIR}/model_{fold}.pth')
             if es.early_stop:
                 print('Early stopping')
@@ -287,30 +286,6 @@ def train_torch_KFold(
 
     print('End training')
     return None
-
-
-def get_model(
-        model_name: str,
-        model_param: DictConfig,
-        feat_cols: List[str] = None,
-        target_cols: List[str] = None,
-        device: torch.device = None) -> Any:
-    if model_name == 'XGBClassifier':
-        if is_gpu():  # check if you're utilizing gpu if present
-            assert model_param.tree_method == 'gpu_hist'
-        return xgb.XGBClassifier(**model_param)
-    elif model_name == 'LGBMClassifier':
-        return lgb.LGBMClassifier(**model_param)
-    elif model_name == 'CatBoostClassifier':
-        return catboost.CatBoostClassifier(**model_param)
-    elif model_name == 'RandomForestClassifier2':
-        return RandomForestClassifier2(**model_param)
-    elif model_name == 'torch_v1':
-        model = ModelV1(feat_cols, target_cols, model_param.dropout_rate, model_param.hidden_size)
-        model.to(device)
-        return model
-    else:
-        raise ValueError(f'Invalid model_name: {model_name}')
 
 
 def train_full(

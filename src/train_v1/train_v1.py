@@ -19,8 +19,9 @@ from torch.nn import BCEWithLogitsLoss
 from torch.optim.lr_scheduler import OneCycleLR, ExponentialLR
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping
+from pytorch_lightning.callbacks import ModelCheckpoint
 from src.train_v1.models.RandomForestClassifier2 import RandomForestClassifier2
-from src.train_v1.models.torchnn import ModelV1, LitModelV1, SmoothBCEwLogits  #, EarlyStopping
+from src.train_v1.models.torchnn import ModelV1, LitModelV1, SmoothBCEwLogits
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit, get_device
 from src.train_v1.util.seeder import seed_everything
 from src.train_v1.features.basetransformer import BaseTransformer
@@ -230,7 +231,7 @@ def train_torch_KFold(
                     target_cols=target_cols,
                     device=device)
         '''
-        # TODO: move this to pl-model   ### このへんを組み込む方法を調べる。
+        # TODO: move this to pl-model
         opt = get_optimizer(
                         optimizer_name=optimizer.name,
                         param=optimizer.param,
@@ -267,12 +268,29 @@ def train_torch_KFold(
                 print('Early stopping')
                 break
         '''
-        escallback = EarlyStopping('val_loss', patience=train_param.early_stopping_rounds, mode='min')
+
+        checkpoint_callback = ModelCheckpoint(
+            monitor="val_loss",
+            dirpath=OUT_DIR,
+            filename="{epoch:02d}-{vr:.3f}-{vp:.3f}-{val_loss:.3f}",
+            mode="max"
+            )
+
+        early_stop_callback = EarlyStopping(
+            'val_loss',
+            patience=train_param.early_stopping_rounds,
+            mode='max'
+            )
+
         trainer = pl.Trainer(
             max_epochs=train_param.epochs,
-            early_stop_callback=escallback
+            fast_dev_run=True,  # TODO: pass from param!
+            callbacks=[checkpoint_callback, early_stop_callback]
             )
         trainer.fit(model, train_loader, valid_loader)
+
+        # log model
+        torch.save(model.state_dict(), f'{OUT_DIR}/model_{fold}.pth')
 
         # log metrics per fold
         pred_tr = inference_fn(model, train_loader, device, target_cols)
@@ -584,7 +602,7 @@ def main(cfg: DictConfig) -> None:
 
         # ensemble models
         for model in models:
-            if cfg.model.type == 'pytorch':
+            if cfg.model.type in ['pytorch', 'pytorch-lightning']:
                 # 1. create prediction as torch.tensor
                 # 2. convert torch.tensor(418, 1) -> np.ndarray(418, 1) -> np.ndarray(418,)
                 # 3. divide by len(model)
@@ -592,9 +610,6 @@ def main(cfg: DictConfig) -> None:
                     .sigmoid().detach().cpu() \
                     .numpy()[:, 0] \
                     / len(models)
-            elif cfg.model.type == 'pytorch-lightning':
-                y_pred += model(torch.tensor(test[feat_cols].values, dtype=torch.float)) \
-                    .sigmoid().numpy()[:, 0] / len(models)
             elif cfg.model.type == 'sklearn':
                 y_pred += model.predict(test[feat_cols].values) / len(models)
             else:

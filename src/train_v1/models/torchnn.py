@@ -102,6 +102,12 @@ class LitModelV1(pl.LightningModule):
         val_loss = loss_fn(y_hat, y)
         return val_loss
 
+    def validation_epoch_end(self, outputs):
+        # calculate average loss in this epoch
+        # outputs is a list of whatever you returned in `validation_step`
+        loss = torch.stack(outputs).mean()
+        self.log("val_loss", loss)
+
 
 class ModelV1(nn.Module):
     def __init__(self, all_feat_cols, target_cols, dropout_rate, hidden_size):

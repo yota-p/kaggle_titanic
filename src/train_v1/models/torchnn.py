@@ -2,7 +2,105 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import _WeightedLoss
+import pytorch_lightning as pl
+
+
+class LitModelV1(pl.LightningModule):
+    def __init__(self, all_feat_cols, target_cols, dropout_rate, hidden_size):
+        super().__init__()
+        self.batch_norm0 = nn.BatchNorm1d(len(all_feat_cols))
+        self.dropout0 = nn.Dropout(0.2)
+
+        self.dense1 = nn.Linear(len(all_feat_cols), hidden_size)
+        self.batch_norm1 = nn.BatchNorm1d(hidden_size)
+        self.dropout1 = nn.Dropout(dropout_rate)
+
+        self.dense2 = nn.Linear(hidden_size+len(all_feat_cols), hidden_size)
+        self.batch_norm2 = nn.BatchNorm1d(hidden_size)
+        self.dropout2 = nn.Dropout(dropout_rate)
+
+        self.dense3 = nn.Linear(hidden_size+hidden_size, hidden_size)
+        self.batch_norm3 = nn.BatchNorm1d(hidden_size)
+        self.dropout3 = nn.Dropout(dropout_rate)
+
+        self.dense4 = nn.Linear(hidden_size+hidden_size, hidden_size)
+        self.batch_norm4 = nn.BatchNorm1d(hidden_size)
+        self.dropout4 = nn.Dropout(dropout_rate)
+
+        self.dense5 = nn.Linear(hidden_size+hidden_size, len(target_cols))
+
+        self.Relu = nn.ReLU(inplace=True)
+        self.PReLU = nn.PReLU()
+        self.LeakyReLU = nn.LeakyReLU(negative_slope=0.01, inplace=True)
+        # self.GeLU = nn.GELU()
+        self.RReLU = nn.RReLU()
+
+    def forward(self, x):
+        x = self.batch_norm0(x)
+        x = self.dropout0(x)
+
+        x1 = self.dense1(x)
+        x1 = self.batch_norm1(x1)
+        # x = F.relu(x)
+        # x = self.PReLU(x)
+        x1 = self.LeakyReLU(x1)
+        x1 = self.dropout1(x1)
+
+        x = torch.cat([x, x1], 1)
+
+        x2 = self.dense2(x)
+        x2 = self.batch_norm2(x2)
+        # x = F.relu(x)
+        # x = self.PReLU(x)
+        x2 = self.LeakyReLU(x2)
+        x2 = self.dropout2(x2)
+
+        x = torch.cat([x1, x2], 1)
+
+        x3 = self.dense3(x)
+        x3 = self.batch_norm3(x3)
+        # x = F.relu(x)
+        # x = self.PReLU(x)
+        x3 = self.LeakyReLU(x3)
+        x3 = self.dropout3(x3)
+
+        x = torch.cat([x2, x3], 1)
+
+        x4 = self.dense4(x)
+        x4 = self.batch_norm4(x4)
+        # x = F.relu(x)
+        # x = self.PReLU(x)
+        x4 = self.LeakyReLU(x4)
+        x4 = self.dropout4(x4)
+
+        x = torch.cat([x3, x4], 1)
+
+        x = self.dense5(x)
+
+        return x
+
+    def configure_optimizers(self):
+        # TODO: get from parameter
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        return optimizer
+
+    def training_step(self, batch, batch_idx):
+        # x, y = batch
+        x, y = batch['features'], batch['label']
+        y_hat = self(x)
+        loss_fn = BCEWithLogitsLoss()
+        loss = loss_fn(y_hat, y)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        # x, y = batch
+        x, y = batch['features'], batch['label']
+        y_hat = self(x)
+        loss_fn = BCEWithLogitsLoss()
+        val_loss = loss_fn(y_hat, y)
+        return val_loss
 
 
 class ModelV1(nn.Module):

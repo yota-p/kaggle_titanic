@@ -17,8 +17,10 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.nn import BCEWithLogitsLoss
 from torch.optim.lr_scheduler import OneCycleLR, ExponentialLR
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import EarlyStopping
 from src.train_v1.models.RandomForestClassifier2 import RandomForestClassifier2
-from src.train_v1.models.torchnn import ModelV1, EarlyStopping, SmoothBCEwLogits
+from src.train_v1.models.torchnn import ModelV1, LitModelV1, SmoothBCEwLogits  #, EarlyStopping
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit, get_device
 from src.train_v1.util.seeder import seed_everything
 from src.train_v1.features.basetransformer import BaseTransformer
@@ -67,9 +69,9 @@ def get_model(
     elif model_name == 'RandomForestClassifier2':
         return RandomForestClassifier2(**model_param)
     elif model_name == 'torch_v1':
-        model = ModelV1(feat_cols, target_cols, model_param.dropout_rate, model_param.hidden_size)
-        model.to(device)
-        return model
+        return ModelV1(feat_cols, target_cols, model_param.dropout_rate, model_param.hidden_size).to_device()
+    elif model_name == 'LitModelV1':
+        return LitModelV1(feat_cols, target_cols, model_param.dropout_rate, model_param.hidden_size)
     else:
         raise ValueError(f'Invalid model_name: {model_name}')
 
@@ -227,7 +229,8 @@ def train_torch_KFold(
                     feat_cols=feat_cols,
                     target_cols=target_cols,
                     device=device)
-
+        '''
+        # TODO: move this to pl-model   ### このへんを組み込む方法を調べる。
         opt = get_optimizer(
                         optimizer_name=optimizer.name,
                         param=optimizer.param,
@@ -263,6 +266,13 @@ def train_torch_KFold(
             if es.early_stop:
                 print('Early stopping')
                 break
+        '''
+        escallback = EarlyStopping('val_loss', patience=train_param.early_stopping_rounds, mode='min')
+        trainer = pl.Trainer(
+            max_epochs=train_param.epochs,
+            early_stop_callback=escallback
+            )
+        trainer.fit(model, train_loader, valid_loader)
 
         # log metrics per fold
         pred_tr = inference_fn(model, train_loader, device, target_cols)
@@ -528,7 +538,7 @@ def main(cfg: DictConfig) -> None:
                 train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param,
                 cfg.model.train_param, OUT_DIR)
         elif cfg.cv.name == 'KFold':
-            if cfg.model.name == 'torch_v1':
+            if cfg.model.type == 'pytorch-lightning':
                 train_torch_KFold(
                     train, feat_cols, [cfg.target.col], cfg.model.name, cfg.model.model_param, cfg.model.train_param,
                     cfg.cv.param, cfg.optimizer, cfg.scheduler, cfg.loss_function, OUT_DIR)
@@ -541,14 +551,19 @@ def main(cfg: DictConfig) -> None:
 
     # Predict
     if cfg.option.predict:
+        print('Start predicting')
         # load data
         test = pd.read_pickle(f'{DATA_DIR}/{cfg.test.path}')
         sample_submission = pd.read_csv(f'{DATA_DIR}/raw/gender_submission.csv')
         y_pred = np.zeros(len(test))
 
-        # load model
+        # feature engineering
+        for p in pipe:
+            test = p.transform(test)
+
+        # load models
         models = []
-        if cfg.model.name == 'torch_v1':
+        if cfg.model.type == 'pytorch-lightning':
             model_paths = [f'{OUT_DIR}/model_{i}.pth' for i in range(cfg.cv.param.n_splits)]
             for model_path in model_paths:
                 torch.cuda.empty_cache()
@@ -557,19 +572,19 @@ def main(cfg: DictConfig) -> None:
                 model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
                 model.eval()
                 models.append(model)
-        else:
+        elif cfg.model.type == 'pytorch':
+            raise NotImplementedError()
+        elif cfg.model.type == 'sklearn':
             model_paths = [f'{OUT_DIR}/model_{i}.pkl' for i in range(cfg.cv.param.n_splits)]
             for model_path in model_paths:
                 model = pd.read_pickle(open(model_path, 'rb'))
                 models.append(model)
+        else:
+            raise ValueError(f'Invalid model.type: {cfg.model.type}')
 
-        # feature engineering
-        for p in pipe:
-            test = p.transform(test)
-
-        print('Start predicting')
-        for model in models:  # ensemble models
-            if cfg.model.name == 'torch_v1':
+        # ensemble models
+        for model in models:
+            if cfg.model.type == 'pytorch':
                 # 1. create prediction as torch.tensor
                 # 2. convert torch.tensor(418, 1) -> np.ndarray(418, 1) -> np.ndarray(418,)
                 # 3. divide by len(model)
@@ -577,8 +592,13 @@ def main(cfg: DictConfig) -> None:
                     .sigmoid().detach().cpu() \
                     .numpy()[:, 0] \
                     / len(models)
-            else:
+            elif cfg.model.type == 'pytorch-lightning':
+                y_pred += model(torch.tensor(test[feat_cols].values, dtype=torch.float)) \
+                    .sigmoid().numpy()[:, 0] / len(models)
+            elif cfg.model.type == 'sklearn':
                 y_pred += model.predict(test[feat_cols].values) / len(models)
+            else:
+                raise ValueError(f'Invalid model.type: {cfg.model.type}')
 
         y_pred = np.where(y_pred >= 0.5, 1, 0).astype(int)
         pred_df = pd.DataFrame(data={'PassengerId': test['PassengerId'].values, 'Survived': y_pred})

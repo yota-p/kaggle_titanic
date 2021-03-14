@@ -1,4 +1,5 @@
 model:
+  type: sklearn
   name: LGBMClassifier
   model_param:
     boosting_type: gbdt

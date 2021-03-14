@@ -1,4 +1,5 @@
 model:
+  type: sklearn
   name: CatBoostClassifier
   model_param:
     loss_function: Logloss

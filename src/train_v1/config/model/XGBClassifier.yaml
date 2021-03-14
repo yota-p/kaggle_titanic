@@ -1,4 +1,5 @@
 model:
+  type: sklearn
   name: XGBClassifier
   model_param:
     n_estimators: 100

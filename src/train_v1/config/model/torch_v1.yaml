@@ -1,0 +1,42 @@
+model:
+  name: torch_v1
+  model_param:
+    dropout_rate: 0.2
+    hidden_size: 256
+  train_param:
+    # gpu_num: 8
+    batch_size: 64  # * gpu_num
+    epochs: 200
+    early_stopping_rounds: 30
+
+optimizer:
+  name: 'Adam'
+  param:
+    lr: 0.001
+    weight_decay: 0.00001
+
+# scheduler:
+  # name: null
+  # param: null
+
+scheduler:
+  name: ExponentialLR
+  param:
+    gamma: 0.1
+    last_epoch: -1
+    verbose: false
+
+# scheduler:
+#   name: OneCycleLR
+#   param: 
+#     pct_start: 0.1
+#     div_factor: 0.001
+#     max_lr: 0.01
+#     epochs: 3
+
+loss_function:
+  # name: SmoothBCEwLogits
+  # param:
+  #   smoothing: 0.005
+  name: BCEWithLogitsLoss
+  param: null

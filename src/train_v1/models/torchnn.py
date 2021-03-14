@@ -1,14 +1,52 @@
 import numpy as np
+from omegaconf import DictConfig
+from typing import Any  # List, Dict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import _WeightedLoss
 import pytorch_lightning as pl
 
 
+def get_optimizer(
+        optimizer_name: str,
+        optimizer_param: DictConfig,
+        model: torch.nn) -> torch.optim.Optimizer:
+    OPTIMIZER_DICT = {
+        'Adam': torch.optim.Adam
+    }
+    if optimizer_param is None:
+        optimizer_param = {}
+    return OPTIMIZER_DICT[optimizer_name](model.parameters(), **optimizer_param)
+
+
+def get_scheduler(
+        scheduler_name: str,
+        scheduler_param: DictConfig,
+        optimizer: torch.optim.Optimizer) -> Any:
+    SCHEDULER_DICT = {
+        'OneCycleLR': torch.optim.lr_scheduler.OneCycleLR,
+        'ExponentialLR': torch.optim.lr_scheduler.ExponentialLR
+    }
+    if scheduler_param is None:
+        scheduler_param = {}
+    return SCHEDULER_DICT[scheduler_name](optimizer, **scheduler_param)
+
+
+def get_loss_function(
+        loss_function_name: str,
+        loss_function_param: DictConfig) -> torch.nn.modules.loss._Loss:
+    LOSS_FUNCTION_DICT = {
+        'SmoothBCEwLogits': SmoothBCEwLogits,
+        'BCEWithLogitsLoss': torch.nn.BCEWithLogitsLoss
+    }
+    if loss_function_param is None:
+        loss_function_param = {}
+    return LOSS_FUNCTION_DICT[loss_function_name](**loss_function_param)
+
+
 class LitModelV1(pl.LightningModule):
-    def __init__(self, all_feat_cols, target_cols, dropout_rate, hidden_size):
+    def __init__(self, all_feat_cols, target_cols, dropout_rate, hidden_size, optimizercfg, schedulercfg, lossfncfg):
         super().__init__()
         self.batch_norm0 = nn.BatchNorm1d(len(all_feat_cols))
         self.dropout0 = nn.Dropout(0.2)
@@ -36,6 +74,10 @@ class LitModelV1(pl.LightningModule):
         self.LeakyReLU = nn.LeakyReLU(negative_slope=0.01, inplace=True)
         # self.GeLU = nn.GELU()
         self.RReLU = nn.RReLU()
+
+        self.optimizercfg = optimizercfg
+        self.schedulercfg = schedulercfg
+        self.lossfncfg = lossfncfg
 
     def forward(self, x):
         x = self.batch_norm0(x)
@@ -82,23 +124,27 @@ class LitModelV1(pl.LightningModule):
         return x
 
     def configure_optimizers(self):
-        # TODO: get from parameter
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
-        return optimizer
+        optimizer = get_optimizer(
+                        optimizer_name=self.optimizercfg.name,
+                        optimizer_param=self.optimizercfg.param,
+                        model=self)
+        scheduler = get_scheduler(
+                        scheduler_name=self.schedulercfg.name,
+                        scheduler_param=self.schedulercfg.param,
+                        optimizer=optimizer)
+        return [optimizer], [scheduler]
 
     def training_step(self, batch, batch_idx):
-        # x, y = batch
         x, y = batch['features'], batch['label']
         y_hat = self(x)
-        loss_fn = BCEWithLogitsLoss()
+        loss_fn = get_loss_function(self.lossfncfg.name, self.lossfncfg.param)
         loss = loss_fn(y_hat, y)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        # x, y = batch
         x, y = batch['features'], batch['label']
         y_hat = self(x)
-        loss_fn = BCEWithLogitsLoss()
+        loss_fn = get_loss_function(self.lossfncfg.name, self.lossfncfg.param)
         val_loss = loss_fn(y_hat, y)
         return val_loss
 
@@ -107,6 +153,69 @@ class LitModelV1(pl.LightningModule):
         # outputs is a list of whatever you returned in `validation_step`
         loss = torch.stack(outputs).mean()
         self.log("val_loss", loss)
+
+
+class EarlyStopping:
+    def __init__(self, patience=7, mode='max'):
+        self.patience = patience
+        self.counter = 0
+        self.mode = mode
+        self.best_score = None
+        self.early_stop = False
+        if self.mode == 'min':
+            self.val_score = np.Inf
+        else:
+            self.val_score = -np.Inf
+
+    def __call__(self, epoch_score, model, model_path):
+
+        if self.mode == 'min':
+            score = -1.0 * epoch_score
+        else:
+            score = np.copy(epoch_score)
+
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(epoch_score, model, model_path)
+        elif score < self.best_score:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(epoch_score, model, model_path)
+            self.counter = 0
+
+    def save_checkpoint(self, epoch_score, model, model_path):
+        if epoch_score not in [-np.inf, np.inf, -np.nan, np.nan]:
+            torch.save(model.state_dict(), model_path)
+        self.val_score = epoch_score
+
+
+class SmoothBCEwLogits(_WeightedLoss):
+    def __init__(self, weight=None, reduction='mean', smoothing=0.0):
+        super().__init__(weight=weight, reduction=reduction)
+        self.smoothing = smoothing
+        self.weight = weight
+        self.reduction = reduction
+
+    @staticmethod
+    def _smooth(targets: torch.Tensor, n_labels: int, smoothing=0.0):
+        assert 0 <= smoothing < 1
+        with torch.no_grad():
+            targets = targets * (1.0 - smoothing) + 0.5 * smoothing
+        return targets
+
+    def forward(self, inputs, targets):
+        targets = SmoothBCEwLogits._smooth(targets, inputs.size(-1), self.smoothing)
+        loss = F.binary_cross_entropy_with_logits(inputs, targets, self.weight)
+
+        if self.reduction == 'sum':
+            loss = loss.sum()
+        elif self.reduction == 'mean':
+            loss = loss.mean()
+
+        return loss
 
 
 class ModelV1(nn.Module):
@@ -182,66 +291,3 @@ class ModelV1(nn.Module):
         x = self.dense5(x)
 
         return x
-
-
-class EarlyStopping:
-    def __init__(self, patience=7, mode='max'):
-        self.patience = patience
-        self.counter = 0
-        self.mode = mode
-        self.best_score = None
-        self.early_stop = False
-        if self.mode == 'min':
-            self.val_score = np.Inf
-        else:
-            self.val_score = -np.Inf
-
-    def __call__(self, epoch_score, model, model_path):
-
-        if self.mode == 'min':
-            score = -1.0 * epoch_score
-        else:
-            score = np.copy(epoch_score)
-
-        if self.best_score is None:
-            self.best_score = score
-            self.save_checkpoint(epoch_score, model, model_path)
-        elif score < self.best_score:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            self.best_score = score
-            self.save_checkpoint(epoch_score, model, model_path)
-            self.counter = 0
-
-    def save_checkpoint(self, epoch_score, model, model_path):
-        if epoch_score not in [-np.inf, np.inf, -np.nan, np.nan]:
-            torch.save(model.state_dict(), model_path)
-        self.val_score = epoch_score
-
-
-class SmoothBCEwLogits(_WeightedLoss):
-    def __init__(self, weight=None, reduction='mean', smoothing=0.0):
-        super().__init__(weight=weight, reduction=reduction)
-        self.smoothing = smoothing
-        self.weight = weight
-        self.reduction = reduction
-
-    @staticmethod
-    def _smooth(targets: torch.Tensor, n_labels: int, smoothing=0.0):
-        assert 0 <= smoothing < 1
-        with torch.no_grad():
-            targets = targets * (1.0 - smoothing) + 0.5 * smoothing
-        return targets
-
-    def forward(self, inputs, targets):
-        targets = SmoothBCEwLogits._smooth(targets, inputs.size(-1), self.smoothing)
-        loss = F.binary_cross_entropy_with_logits(inputs, targets, self.weight)
-
-        if self.reduction == 'sum':
-            loss = loss.sum()
-        elif self.reduction == 'mean':
-            loss = loss.mean()
-
-        return loss

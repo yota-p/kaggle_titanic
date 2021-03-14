@@ -15,13 +15,10 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold
 import torch
 from torch.utils.data import DataLoader, Dataset
-from torch.nn import BCEWithLogitsLoss
-from torch.optim.lr_scheduler import OneCycleLR, ExponentialLR
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping
-from pytorch_lightning.callbacks import ModelCheckpoint
 from src.train_v1.models.RandomForestClassifier2 import RandomForestClassifier2
-from src.train_v1.models.torchnn import ModelV1, LitModelV1, SmoothBCEwLogits
+from src.train_v1.models.torchnn import ModelV1, LitModelV1
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit, get_device
 from src.train_v1.util.seeder import seed_everything
 from src.train_v1.features.basetransformer import BaseTransformer
@@ -56,6 +53,9 @@ class NaFiller(BaseTransformer):
 def get_model(
         model_name: str,
         model_param: DictConfig,
+        optimizercfg: DictConfig = None,
+        schedulercfg: DictConfig = None,
+        lossfncfg: DictConfig = None,
         feat_cols: List[str] = None,
         target_cols: List[str] = None,
         device: torch.device = None) -> Any:
@@ -70,60 +70,24 @@ def get_model(
     elif model_name == 'RandomForestClassifier2':
         return RandomForestClassifier2(**model_param)
     elif model_name == 'torch_v1':
-        return ModelV1(feat_cols, target_cols, model_param.dropout_rate, model_param.hidden_size).to_device()
+        return ModelV1(
+            feat_cols,
+            target_cols,
+            model_param.dropout_rate,
+            model_param.hidden_size
+            ).to_device()
     elif model_name == 'LitModelV1':
-        return LitModelV1(feat_cols, target_cols, model_param.dropout_rate, model_param.hidden_size)
+        return LitModelV1(
+            feat_cols,
+            target_cols,
+            model_param.dropout_rate,
+            model_param.hidden_size,
+            optimizercfg,
+            schedulercfg,
+            lossfncfg
+            )
     else:
         raise ValueError(f'Invalid model_name: {model_name}')
-
-
-def get_optimizer(
-        optimizer_name: str,
-        param: DictConfig,
-        model_param) -> torch.optim.Optimizer:
-    if optimizer_name == 'Adam':
-        return torch.optim.Adam(model_param, lr=param.lr, weight_decay=param.weight_decay)
-        # optimizer = Nadam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-        # optimizer = Lookahead(optimizer=optimizer, k=10, alpha=0.5)
-    else:
-        raise ValueError(f'Invalid optimizer: {optimizer_name}')
-
-
-def get_scheduler(
-        scheduler_name: str,
-        scheduler_param: DictConfig,
-        steps_per_epoch: int,
-        optimizer: torch.optim.Optimizer) -> Any:
-    if scheduler_name is None:
-        return None
-    elif scheduler_name == 'OneCycleLR':
-        return OneCycleLR(
-                    optimizer=optimizer,
-                    pct_start=scheduler_param.pct_start,
-                    div_factor=scheduler_param.div_factor,
-                    max_lr=scheduler_param.max_lr,
-                    epochs=scheduler_param.epochs,
-                    steps_per_epoch=steps_per_epoch)
-    elif scheduler_name == 'ExponentialLR':
-        return ExponentialLR(
-                    optimizer=optimizer,
-                    gamma=scheduler_param.gamma,
-                    last_epoch=scheduler_param.last_epoch,
-                    verbose=scheduler_param.verbose)
-    else:
-        raise ValueError(f'Invalid scheduler: {scheduler_name}')
-
-
-def get_loss_function(
-        loss_function_name: str,
-        param: DictConfig) -> torch.nn.modules.loss._Loss:  # _WeightedLoss or BCEWithLogitsLoss
-
-    if loss_function_name == 'SmoothBCEwLogits':
-        return SmoothBCEwLogits(smoothing=param.smoothing)
-    elif loss_function_name == 'BCEWithLogitsLoss':
-        return BCEWithLogitsLoss()
-    else:
-        raise ValueError(f'Invalid loss functin: {loss_function_name}')
 
 
 def train_fn(model, optimizer, scheduler, loss_fn, dataloader, device):
@@ -227,28 +191,14 @@ def train_torch_KFold(
         model = get_model(
                     model_name,
                     model_param,
+                    optimizer,
+                    scheduler,
+                    loss_function,
                     feat_cols=feat_cols,
                     target_cols=target_cols,
                     device=device)
         '''
         # TODO: move this to pl-model
-        opt = get_optimizer(
-                        optimizer_name=optimizer.name,
-                        param=optimizer.param,
-                        model_param=model.parameters())
-
-        sch = get_scheduler(
-                        scheduler_name=scheduler.name,
-                        scheduler_param=scheduler.param,
-                        steps_per_epoch=len(train_loader),
-                        optimizer=opt)
-
-        loss_fn = get_loss_function(
-                    loss_function_name=loss_function.name,
-                    param=loss_function.param)
-
-        es = EarlyStopping(patience=train_param.early_stopping_rounds, mode='max')
-
         for epoch in range(train_param.epochs):
             train_loss = train_fn(model, opt, sch, loss_fn, train_loader, device)
 
@@ -269,13 +219,6 @@ def train_torch_KFold(
                 break
         '''
 
-        checkpoint_callback = ModelCheckpoint(
-            monitor="val_loss",
-            dirpath=OUT_DIR,
-            filename="{epoch:02d}-{vr:.3f}-{vp:.3f}-{val_loss:.3f}",
-            mode="max"
-            )
-
         early_stop_callback = EarlyStopping(
             'val_loss',
             patience=train_param.early_stopping_rounds,
@@ -285,7 +228,7 @@ def train_torch_KFold(
         trainer = pl.Trainer(
             max_epochs=train_param.epochs,
             fast_dev_run=True,  # TODO: pass from param!
-            callbacks=[checkpoint_callback, early_stop_callback]
+            callbacks=[early_stop_callback]
             )
         trainer.fit(model, train_loader, valid_loader)
 

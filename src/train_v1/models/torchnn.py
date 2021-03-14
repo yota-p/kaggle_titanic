@@ -30,6 +30,8 @@ def get_scheduler(
     }
     if scheduler_param is None:
         scheduler_param = {}
+    if scheduler_name is None:  # scheduler might not be specified
+        return None
     return SCHEDULER_DICT[scheduler_name](optimizer, **scheduler_param)
 
 
@@ -132,27 +134,40 @@ class LitModelV1(pl.LightningModule):
                         scheduler_name=self.schedulercfg.name,
                         scheduler_param=self.schedulercfg.param,
                         optimizer=optimizer)
-        return [optimizer], [scheduler]
+        if scheduler is None:
+            return [optimizer]
+        else:
+            return [optimizer], [scheduler]
 
     def training_step(self, batch, batch_idx):
         x, y = batch['features'], batch['label']
         y_hat = self(x)
         loss_fn = get_loss_function(self.lossfncfg.name, self.lossfncfg.param)
         loss = loss_fn(y_hat, y)
+        self.log('tr-loss', loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch['features'], batch['label']
         y_hat = self(x)
         loss_fn = get_loss_function(self.lossfncfg.name, self.lossfncfg.param)
-        val_loss = loss_fn(y_hat, y)
-        return val_loss
+        loss = loss_fn(y_hat, y)
+        y_pred = y_hat.ge(.5).view(-1)
+        acc = (y_pred == y).sum().float() / len(y)
+        # acc = torch.sum(y_hat == y) * 1.0 / len(y)  # TODO: fix this! accuracy is buggy now...
+        scores = {'val-loss': loss, 'val-acc': acc}
+        results = {'val-loss': loss, 'val-acc': acc, 'log': scores}
+        return results
+        # self.log('val-loss_vsepoch', loss)
+        # return loss
 
+    '''
     def validation_epoch_end(self, outputs):
         # calculate average loss in this epoch
         # outputs is a list of whatever you returned in `validation_step`
-        loss = torch.stack(outputs).mean()
-        self.log("val_loss", loss)
+        loss = torch.stack(outputs['val-loss']).mean()
+        self.log("val-loss_avg", loss)
+    '''
 
 
 class EarlyStopping:

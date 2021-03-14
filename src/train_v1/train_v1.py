@@ -17,6 +17,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping
+from pytorch_lightning.loggers import MLFlowLogger
 from src.train_v1.models.RandomForestClassifier2 import RandomForestClassifier2
 from src.train_v1.models.torchnn import ModelV1, LitModelV1
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit, get_device
@@ -169,6 +170,7 @@ def train_torch_KFold(
         scores[metric] = {'vsfold': [], 'avg': None}
 
     device = get_device()
+    logger = MLFlowLogger('train_v1', tracking_uri='http://mlflow-tracking-server:5000')
     target = target_cols[0]
 
     kf = KFold(**cv_param)
@@ -197,6 +199,7 @@ def train_torch_KFold(
                     feat_cols=feat_cols,
                     target_cols=target_cols,
                     device=device)
+
         '''
         # TODO: move this to pl-model
         for epoch in range(train_param.epochs):
@@ -220,15 +223,16 @@ def train_torch_KFold(
         '''
 
         early_stop_callback = EarlyStopping(
-            'val_loss',
+            'val-loss',
             patience=train_param.early_stopping_rounds,
             mode='max'
             )
 
         trainer = pl.Trainer(
             max_epochs=train_param.epochs,
-            fast_dev_run=True,  # TODO: pass from param!
-            callbacks=[early_stop_callback]
+            fast_dev_run=False,  # TODO: pass from param!
+            callbacks=[early_stop_callback],
+            logger=logger
             )
         trainer.fit(model, train_loader, valid_loader)
 

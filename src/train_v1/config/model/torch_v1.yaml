@@ -16,16 +16,16 @@ optimizer:
     lr: 0.001
     weight_decay: 0.00001
 
-# scheduler:
-  # name: null
-  # param: null
-
 scheduler:
-  name: ExponentialLR
-  param:
-    gamma: 0.1
-    last_epoch: -1
-    verbose: false
+  name: null
+  param: null
+
+# scheduler:
+#   name: ExponentialLR
+#   param:
+#     gamma: 0.1
+#     last_epoch: -1
+#     verbose: false
 
 # scheduler:
 #   name: OneCycleLR

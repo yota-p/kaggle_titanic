@@ -307,7 +307,6 @@ def train_full(
 
     file = f'{OUT_DIR}/model_0.pkl'
     pickle.dump(model, open(file, 'wb'))
-    mlflow.log_artifact(file)
     print('End training')
 
     return None
@@ -442,9 +441,7 @@ def train_gbdt_KFold(
             mlflow.log_metric(f'{metric}_vsfold', score[metric], step=fold)
 
         # log model
-        file = f'{OUT_DIR}/model_{fold}.pkl'
-        pickle.dump(model, open(file, 'wb'))
-        mlflow.log_artifact(file)
+        pickle.dump(model, open(f'{OUT_DIR}/model_{fold}.pkl', 'wb'))
 
     # log metrics averaged over folds
     for metric in metrics:
@@ -589,9 +586,11 @@ def main(cfg: DictConfig) -> None:
         if not pred_df.shape == sample_submission.shape:
             raise Exception(f'Incorrect pred_df.shape: {pred_df.shape}')
 
-        pred_df.to_csv(f'{OUT_DIR}/submission.csv', index=False)
+        submission_path = f'{OUT_DIR}/submission.csv'
+        pred_df.to_csv(submission_path, index=False)
         print('End predicting')
 
+    mlflow.log_artifacts(OUT_DIR)
     return None
 
 

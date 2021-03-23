@@ -15,10 +15,10 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold
 import torch
 from torch.utils.data import DataLoader, Dataset
-from torch.nn import BCEWithLogitsLoss
-from torch.optim.lr_scheduler import OneCycleLR, ExponentialLR
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import EarlyStopping
 from src.train_v1.models.RandomForestClassifier2 import RandomForestClassifier2
-from src.train_v1.models.torchnn import ModelV1, EarlyStopping, SmoothBCEwLogits
+from src.train_v1.models.torchnn import ModelV1, LitModelV1
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit, get_device
 from src.train_v1.util.seeder import seed_everything
 from src.train_v1.features.basetransformer import BaseTransformer
@@ -53,8 +53,12 @@ class NaFiller(BaseTransformer):
 def get_model(
         model_name: str,
         model_param: DictConfig,
+        optimizercfg: DictConfig = None,
+        schedulercfg: DictConfig = None,
+        lossfncfg: DictConfig = None,
         feat_cols: List[str] = None,
         target_cols: List[str] = None,
+        fold: int = 0,
         device: torch.device = None) -> Any:
     if model_name == 'XGBClassifier':
         if is_gpu():  # check if you're utilizing gpu if present
@@ -67,60 +71,25 @@ def get_model(
     elif model_name == 'RandomForestClassifier2':
         return RandomForestClassifier2(**model_param)
     elif model_name == 'torch_v1':
-        model = ModelV1(feat_cols, target_cols, model_param.dropout_rate, model_param.hidden_size)
-        model.to(device)
-        return model
+        return ModelV1(
+            feat_cols,
+            target_cols,
+            model_param.dropout_rate,
+            model_param.hidden_size
+            ).to_device()
+    elif model_name == 'LitModelV1':
+        return LitModelV1(
+            feat_cols,
+            target_cols,
+            model_param.dropout_rate,
+            model_param.hidden_size,
+            optimizercfg,
+            schedulercfg,
+            lossfncfg,
+            fold
+            )
     else:
         raise ValueError(f'Invalid model_name: {model_name}')
-
-
-def get_optimizer(
-        optimizer_name: str,
-        param: DictConfig,
-        model_param) -> torch.optim.Optimizer:
-    if optimizer_name == 'Adam':
-        return torch.optim.Adam(model_param, lr=param.lr, weight_decay=param.weight_decay)
-        # optimizer = Nadam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-        # optimizer = Lookahead(optimizer=optimizer, k=10, alpha=0.5)
-    else:
-        raise ValueError(f'Invalid optimizer: {optimizer_name}')
-
-
-def get_scheduler(
-        scheduler_name: str,
-        scheduler_param: DictConfig,
-        steps_per_epoch: int,
-        optimizer: torch.optim.Optimizer) -> Any:
-    if scheduler_name is None:
-        return None
-    elif scheduler_name == 'OneCycleLR':
-        return OneCycleLR(
-                    optimizer=optimizer,
-                    pct_start=scheduler_param.pct_start,
-                    div_factor=scheduler_param.div_factor,
-                    max_lr=scheduler_param.max_lr,
-                    epochs=scheduler_param.epochs,
-                    steps_per_epoch=steps_per_epoch)
-    elif scheduler_name == 'ExponentialLR':
-        return ExponentialLR(
-                    optimizer=optimizer,
-                    gamma=scheduler_param.gamma,
-                    last_epoch=scheduler_param.last_epoch,
-                    verbose=scheduler_param.verbose)
-    else:
-        raise ValueError(f'Invalid scheduler: {scheduler_name}')
-
-
-def get_loss_function(
-        loss_function_name: str,
-        param: DictConfig) -> torch.nn.modules.loss._Loss:  # _WeightedLoss or BCEWithLogitsLoss
-
-    if loss_function_name == 'SmoothBCEwLogits':
-        return SmoothBCEwLogits(smoothing=param.smoothing)
-    elif loss_function_name == 'BCEWithLogitsLoss':
-        return BCEWithLogitsLoss()
-    else:
-        raise ValueError(f'Invalid loss functin: {loss_function_name}')
 
 
 def train_fn(model, optimizer, scheduler, loss_fn, dataloader, device):
@@ -224,45 +193,29 @@ def train_torch_KFold(
         model = get_model(
                     model_name,
                     model_param,
+                    optimizer,
+                    scheduler,
+                    loss_function,
                     feat_cols=feat_cols,
                     target_cols=target_cols,
+                    fold=fold,
                     device=device)
 
-        opt = get_optimizer(
-                        optimizer_name=optimizer.name,
-                        param=optimizer.param,
-                        model_param=model.parameters())
+        early_stop_callback = EarlyStopping(
+            'val-loss_vsepoch',
+            patience=train_param.early_stopping_rounds,
+            mode='max'
+            )
 
-        sch = get_scheduler(
-                        scheduler_name=scheduler.name,
-                        scheduler_param=scheduler.param,
-                        steps_per_epoch=len(train_loader),
-                        optimizer=opt)
+        trainer = pl.Trainer(
+            max_epochs=train_param.epochs,
+            fast_dev_run=False,  # TODO: pass from param!
+            callbacks=[early_stop_callback],
+            )
+        trainer.fit(model, train_loader, valid_loader)
 
-        loss_fn = get_loss_function(
-                    loss_function_name=loss_function.name,
-                    param=loss_function.param)
-
-        es = EarlyStopping(patience=train_param.early_stopping_rounds, mode='max')
-
-        for epoch in range(train_param.epochs):
-            train_loss = train_fn(model, opt, sch, loss_fn, train_loader, device)
-
-            # calculate validation auc for early stopping
-            with torch.no_grad():
-                feature_val = valid_set[:]['features'].to(device)
-                label_val = valid_set[:]['label'].to(device)
-                pred_val = model(feature_val)
-                valid_loss = loss_fn(pred_val, label_val).item()
-            print(f'fold: {fold}, epoch: {epoch}, train_loss: {train_loss}, valid_loss: {valid_loss}')
-            mlflow.log_metric(f'fold{fold}_train-loss_vsepoch', train_loss, step=epoch)
-            mlflow.log_metric(f'fold{fold}_valid-loss_vsepoch', valid_loss, step=epoch)
-
-            valid_auc = roc_auc_score(y_val, pred_val.detach().numpy())
-            es(valid_auc, model, model_path=f'{OUT_DIR}/model_{fold}.pth')
-            if es.early_stop:
-                print('Early stopping')
-                break
+        # log model
+        torch.save(model.state_dict(), f'{OUT_DIR}/model_{fold}.pth')
 
         # log metrics per fold
         pred_tr = inference_fn(model, train_loader, device, target_cols)
@@ -528,7 +481,7 @@ def main(cfg: DictConfig) -> None:
                 train, feat_cols, cfg.target.col, cfg.model.name, cfg.model.model_param,
                 cfg.model.train_param, OUT_DIR)
         elif cfg.cv.name == 'KFold':
-            if cfg.model.name == 'torch_v1':
+            if cfg.model.type == 'pytorch-lightning':
                 train_torch_KFold(
                     train, feat_cols, [cfg.target.col], cfg.model.name, cfg.model.model_param, cfg.model.train_param,
                     cfg.cv.param, cfg.optimizer, cfg.scheduler, cfg.loss_function, OUT_DIR)
@@ -541,14 +494,19 @@ def main(cfg: DictConfig) -> None:
 
     # Predict
     if cfg.option.predict:
+        print('Start predicting')
         # load data
         test = pd.read_pickle(f'{DATA_DIR}/{cfg.test.path}')
         sample_submission = pd.read_csv(f'{DATA_DIR}/raw/gender_submission.csv')
         y_pred = np.zeros(len(test))
 
-        # load model
+        # feature engineering
+        for p in pipe:
+            test = p.transform(test)
+
+        # load models
         models = []
-        if cfg.model.name == 'torch_v1':
+        if cfg.model.type == 'pytorch-lightning':
             model_paths = [f'{OUT_DIR}/model_{i}.pth' for i in range(cfg.cv.param.n_splits)]
             for model_path in model_paths:
                 torch.cuda.empty_cache()
@@ -557,19 +515,19 @@ def main(cfg: DictConfig) -> None:
                 model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
                 model.eval()
                 models.append(model)
-        else:
+        elif cfg.model.type == 'pytorch':
+            raise NotImplementedError()
+        elif cfg.model.type == 'sklearn':
             model_paths = [f'{OUT_DIR}/model_{i}.pkl' for i in range(cfg.cv.param.n_splits)]
             for model_path in model_paths:
                 model = pd.read_pickle(open(model_path, 'rb'))
                 models.append(model)
+        else:
+            raise ValueError(f'Invalid model.type: {cfg.model.type}')
 
-        # feature engineering
-        for p in pipe:
-            test = p.transform(test)
-
-        print('Start predicting')
-        for model in models:  # ensemble models
-            if cfg.model.name == 'torch_v1':
+        # ensemble models
+        for model in models:
+            if cfg.model.type in ['pytorch', 'pytorch-lightning']:
                 # 1. create prediction as torch.tensor
                 # 2. convert torch.tensor(418, 1) -> np.ndarray(418, 1) -> np.ndarray(418,)
                 # 3. divide by len(model)
@@ -577,8 +535,10 @@ def main(cfg: DictConfig) -> None:
                     .sigmoid().detach().cpu() \
                     .numpy()[:, 0] \
                     / len(models)
-            else:
+            elif cfg.model.type == 'sklearn':
                 y_pred += model.predict(test[feat_cols].values) / len(models)
+            else:
+                raise ValueError(f'Invalid model.type: {cfg.model.type}')
 
         y_pred = np.where(y_pred >= 0.5, 1, 0).astype(int)
         pred_df = pd.DataFrame(data={'PassengerId': test['PassengerId'].values, 'Survived': y_pred})

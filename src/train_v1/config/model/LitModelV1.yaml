@@ -1,6 +1,6 @@
 model:
-  type: pytorch
-  name: torch_v1
+  type: pytorch-lightning
+  name: LitModelV1
   model_param:
     dropout_rate: 0.2
     hidden_size: 256
@@ -34,7 +34,6 @@ scheduler:
 #     div_factor: 0.001
 #     max_lr: 0.01
 #     epochs: 3
-#     steps_per_epoch: 100  # len(dataset)
 
 loss_function:
   # name: SmoothBCEwLogits

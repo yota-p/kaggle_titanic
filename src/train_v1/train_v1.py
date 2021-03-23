@@ -17,7 +17,6 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping
-from pytorch_lightning.loggers import MLFlowLogger
 from src.train_v1.models.RandomForestClassifier2 import RandomForestClassifier2
 from src.train_v1.models.torchnn import ModelV1, LitModelV1
 from src.train_v1.util.get_environment import get_datadir, is_gpu, get_exec_env, has_changes_to_commit, get_head_commit, get_device
@@ -59,6 +58,7 @@ def get_model(
         lossfncfg: DictConfig = None,
         feat_cols: List[str] = None,
         target_cols: List[str] = None,
+        fold: int = 0,
         device: torch.device = None) -> Any:
     if model_name == 'XGBClassifier':
         if is_gpu():  # check if you're utilizing gpu if present
@@ -85,7 +85,8 @@ def get_model(
             model_param.hidden_size,
             optimizercfg,
             schedulercfg,
-            lossfncfg
+            lossfncfg,
+            fold
             )
     else:
         raise ValueError(f'Invalid model_name: {model_name}')
@@ -170,7 +171,6 @@ def train_torch_KFold(
         scores[metric] = {'vsfold': [], 'avg': None}
 
     device = get_device()
-    logger = MLFlowLogger('train_v1', tracking_uri='http://mlflow-tracking-server:5000')
     target = target_cols[0]
 
     kf = KFold(**cv_param)
@@ -198,32 +198,11 @@ def train_torch_KFold(
                     loss_function,
                     feat_cols=feat_cols,
                     target_cols=target_cols,
+                    fold=fold,
                     device=device)
 
-        '''
-        # TODO: move this to pl-model
-        for epoch in range(train_param.epochs):
-            train_loss = train_fn(model, opt, sch, loss_fn, train_loader, device)
-
-            # calculate validation auc for early stopping
-            with torch.no_grad():
-                feature_val = valid_set[:]['features'].to(device)
-                label_val = valid_set[:]['label'].to(device)
-                pred_val = model(feature_val)
-                valid_loss = loss_fn(pred_val, label_val).item()
-            print(f'fold: {fold}, epoch: {epoch}, train_loss: {train_loss}, valid_loss: {valid_loss}')
-            mlflow.log_metric(f'fold{fold}_train-loss_vsepoch', train_loss, step=epoch)
-            mlflow.log_metric(f'fold{fold}_valid-loss_vsepoch', valid_loss, step=epoch)
-
-            valid_auc = roc_auc_score(y_val, pred_val.detach().numpy())
-            es(valid_auc, model, model_path=f'{OUT_DIR}/model_{fold}.pth')
-            if es.early_stop:
-                print('Early stopping')
-                break
-        '''
-
         early_stop_callback = EarlyStopping(
-            'val-loss',
+            'val-loss_vsepoch',
             patience=train_param.early_stopping_rounds,
             mode='max'
             )
@@ -232,7 +211,6 @@ def train_torch_KFold(
             max_epochs=train_param.epochs,
             fast_dev_run=False,  # TODO: pass from param!
             callbacks=[early_stop_callback],
-            logger=logger
             )
         trainer.fit(model, train_loader, valid_loader)
 

@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.loss import _WeightedLoss
 import pytorch_lightning as pl
+import mlflow
 
 
 def get_optimizer(
@@ -48,7 +49,7 @@ def get_loss_function(
 
 
 class LitModelV1(pl.LightningModule):
-    def __init__(self, all_feat_cols, target_cols, dropout_rate, hidden_size, optimizercfg, schedulercfg, lossfncfg):
+    def __init__(self, all_feat_cols, target_cols, dropout_rate, hidden_size, optimizercfg, schedulercfg, lossfncfg, fold):
         super().__init__()
         self.batch_norm0 = nn.BatchNorm1d(len(all_feat_cols))
         self.dropout0 = nn.Dropout(0.2)
@@ -80,6 +81,7 @@ class LitModelV1(pl.LightningModule):
         self.optimizercfg = optimizercfg
         self.schedulercfg = schedulercfg
         self.lossfncfg = lossfncfg
+        self.fold = fold  # fold to separate logging namespace
 
     def forward(self, x):
         x = self.batch_norm0(x)
@@ -139,35 +141,47 @@ class LitModelV1(pl.LightningModule):
         else:
             return [optimizer], [scheduler]
 
-    def training_step(self, batch, batch_idx):
-        x, y = batch['features'], batch['label']
-        y_hat = self(x)
-        loss_fn = get_loss_function(self.lossfncfg.name, self.lossfncfg.param)
-        loss = loss_fn(y_hat, y)
-        self.log('tr-loss', loss)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
+    def training_step(self, batch, batch_idx):  # this is called per batch
         x, y = batch['features'], batch['label']
         y_hat = self(x)
         loss_fn = get_loss_function(self.lossfncfg.name, self.lossfncfg.param)
         loss = loss_fn(y_hat, y)
         y_pred = y_hat.ge(.5).view(-1)
-        acc = (y_pred == y).sum().float() / len(y)
-        # acc = torch.sum(y_hat == y) * 1.0 / len(y)  # TODO: fix this! accuracy is buggy now...
-        scores = {'val-loss': loss, 'val-acc': acc}
-        results = {'val-loss': loss, 'val-acc': acc, 'log': scores}
-        return results
-        # self.log('val-loss_vsepoch', loss)
-        # return loss
+        acc = (y_pred == torch.squeeze(y)).sum().float() / len(y)
+        return {'loss': loss, 'tr-acc': acc}  # training_step must return 'loss'
 
-    '''
-    def validation_epoch_end(self, outputs):
-        # calculate average loss in this epoch
+    def validation_step(self, batch, batch_idx):  # this is called per batch
+        x, y = batch['features'], batch['label']
+        y_hat = self(x)
+        loss_fn = get_loss_function(self.lossfncfg.name, self.lossfncfg.param)
+        loss = loss_fn(y_hat, y)
+        y_pred = y_hat.ge(.5).view(-1)
+        acc = (y_pred == torch.squeeze(y)).sum().float() / len(y)
+        return {'val-loss': loss, 'val-acc': acc}
+
+    def training_epoch_end(self, outputs):
+        # calculate average in this epoch
+        loss = torch.stack([x['loss'] for x in outputs]).mean()
+        acc = torch.stack([x['tr-acc'] for x in outputs]).mean()
+        mlflow.log_metrics({
+            f'fold{self.fold}_tr-loss_vsepoch': loss.item(),
+            f'fold{self.fold}_tr-acc_vsepoch': acc.item()
+            },
+            step=self.current_epoch
+            )
+
+    def validation_epoch_end(self, outputs):  # this is called per epoch
+        # calculate average in this epoch
         # outputs is a list of whatever you returned in `validation_step`
-        loss = torch.stack(outputs['val-loss']).mean()
-        self.log("val-loss_avg", loss)
-    '''
+        loss = torch.stack([x['val-loss'] for x in outputs]).mean()
+        acc = torch.stack([x['val-acc'] for x in outputs]).mean()
+        mlflow.log_metrics({
+            f'fold{self.fold}_val-loss_vsepoch': loss.item(),
+            f'fold{self.fold}_val-acc_vsepoch': acc.item()
+            },
+            step=self.current_epoch
+            )
+        self.log('val-loss_vsepoch', loss)  # refer this metric for early stopping
 
 
 class EarlyStopping:
